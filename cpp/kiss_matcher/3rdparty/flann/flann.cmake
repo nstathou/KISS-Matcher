@@ -28,11 +28,12 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   flann
   GIT_REPOSITORY https://github.com/flann-lib/flann.git
-  GIT_TAG 1.9.2
+  GIT_TAG master
   GIT_SHALLOW TRUE
 )
 
-# Configure FLANN options
+# Configure FLANN options before FetchContent_MakeAvailable
+set(BUILD_C_BINDINGS OFF CACHE BOOL "Build FLANN C bindings" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "Build FLANN examples" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "Build FLANN tests" FORCE)
 set(BUILD_DOC OFF CACHE BOOL "Build FLANN documentation" FORCE)
@@ -42,11 +43,16 @@ set(USE_OPENMP ON CACHE BOOL "Use OpenMP" FORCE)
 
 FetchContent_MakeAvailable(flann)
 
-# Ensure FLANN headers are treated as system includes
-if(TARGET flann)
-  get_target_property(flann_include_dirs flann INTERFACE_INCLUDE_DIRECTORIES)
-  set_target_properties(flann PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${flann_include_dirs}")
+# Create alias for easier linking (FLANN creates flann_cpp_s for static)
+if(TARGET flann_cpp_s)
+  add_library(flann_cpp ALIAS flann_cpp_s)
+  get_target_property(flann_include_dirs flann_cpp_s INTERFACE_INCLUDE_DIRECTORIES)
+  set_target_properties(flann_cpp_s PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${flann_include_dirs}")
 elseif(TARGET flann_cpp)
   get_target_property(flann_include_dirs flann_cpp INTERFACE_INCLUDE_DIRECTORIES)
   set_target_properties(flann_cpp PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${flann_include_dirs}")
+elseif(TARGET flann)
+  add_library(flann_cpp ALIAS flann)
+  get_target_property(flann_include_dirs flann INTERFACE_INCLUDE_DIRECTORIES)
+  set_target_properties(flann PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${flann_include_dirs}")
 endif()
