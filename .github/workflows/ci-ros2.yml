@@ -53,6 +53,7 @@ jobs:
             libeigen3-dev \
             libtbb-dev \
             liblz4-dev \
+            libflann-dev \
             libpcl-dev \
             libgtsam-dev \
             ros-${{ matrix.ros_distro }}-pcl-ros \

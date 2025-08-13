@@ -50,6 +50,8 @@ jobs:
             libeigen3-dev \
             libtbb-dev \
             liblz4-dev \
+            libflann-dev \
+            libpcl-dev \
             git \
             ${{ matrix.cxx }}
 
@@ -63,6 +65,8 @@ jobs:
             eigen \
             tbb \
             lz4 \
+            flann \
+            pcl \
             git
 
       - name: Setup MSVC (Windows)
@@ -177,6 +181,7 @@ jobs:
             libeigen3-dev \
             libtbb-dev \
             liblz4-dev \
+            libflann-dev \
             libpcl-dev
 
       - name: Setup ccache
