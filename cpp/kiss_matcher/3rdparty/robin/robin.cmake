@@ -27,9 +27,8 @@ option(PMC_BUILD_SHARED "Build pmc as a shared library (.so)" OFF)
 include(FetchContent)
 FetchContent_Declare(
   robin
-  GIT_REPOSITORY https://github.com/MIT-SPARK/ROBIN.git
-  GIT_TAG v.1.2.4
-  GIT_SHALLOW TRUE
+  URL https://github.com/MIT-SPARK/ROBIN/archive/refs/tags/v.1.2.4.tar.gz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(robin)

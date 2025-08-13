@@ -50,6 +50,7 @@ jobs:
             libeigen3-dev \
             libtbb-dev \
             liblz4-dev \
+            git \
             ${{ matrix.cxx }}
 
       - name: Install system dependencies (macOS)
@@ -61,7 +62,8 @@ jobs:
             ccache \
             eigen \
             tbb \
-            lz4
+            lz4 \
+            git
 
       - name: Setup MSVC (Windows)
         if: runner.os == 'Windows'

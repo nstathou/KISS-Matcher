@@ -25,55 +25,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            ninja-build \
-            ccache \
-            libeigen3-dev \
-            libtbb-dev \
-            liblz4-dev
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install \
-            cmake \
-            ninja \
-            ccache \
-            eigen \
-            tbb \
-            lz4
-
-      - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows'
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          choco install cmake ninja ccache
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-ccache-python-${{ matrix.os }}
-          restore-keys: ${{ runner.os }}-ccache-python
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/Library/Caches/pip
-            C:\Users\runneradmin\.cache\pip
-          key: ${{ runner.os }}-pip-python-${{ hashFiles('python/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-python-
+      # Don't install system deps for wheels - cibuildwheel handles its own environment
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.20.0
