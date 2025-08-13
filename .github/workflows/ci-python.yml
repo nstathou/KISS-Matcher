@@ -40,13 +40,12 @@ jobs:
 
           # Linux specific settings (manylinux containers use yum)
           CIBW_BEFORE_BUILD_LINUX: |
-            yum install -y epel-release &&
-            yum install -y git cmake3 ninja-build boost-devel flann-devel &&
+            yum install -y git cmake3 ninja-build &&
             ln -sf /usr/bin/cmake3 /usr/bin/cmake || true
 
           # macOS specific settings
           CIBW_BEFORE_BUILD_MACOS: |
-            brew install git cmake ninja flann boost
+            brew install git cmake ninja
 
           # Windows specific settings
           CIBW_BEFORE_BUILD_WINDOWS: |
