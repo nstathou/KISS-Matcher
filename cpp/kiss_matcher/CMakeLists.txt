@@ -71,7 +71,7 @@ add_library(${TARGET_NAME} STATIC
 add_library(kiss_matcher::kiss_matcher_core ALIAS kiss_matcher_core)
 
 target_link_libraries(${TARGET_NAME}
-    PUBLIC Eigen3::Eigen robin::robin ${OpenMP_LIBS} ${EIGEN3_LIBS} TBB::tbb ${LZ4_LIBRARY}
+    PUBLIC Eigen3::Eigen robin::robin flann_cpp ${OpenMP_LIBS} ${EIGEN3_LIBS} TBB::tbb ${LZ4_LIBRARY}
 )
 
 # To make kiss_matcher::core global for Pybinding

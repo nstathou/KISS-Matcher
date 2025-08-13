@@ -112,7 +112,8 @@ jobs:
                 -DUSE_CCACHE=ON \
                 -DUSE_SYSTEM_EIGEN3=ON \
                 -DUSE_SYSTEM_TBB=ON \
-                -DUSE_SYSTEM_ROBIN=OFF
+                -DUSE_SYSTEM_ROBIN=OFF \
+                -DUSE_SYSTEM_FLANN=OFF
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
@@ -125,7 +126,8 @@ jobs:
                 -DUSE_CCACHE=OFF `
                 -DUSE_SYSTEM_EIGEN3=OFF `
                 -DUSE_SYSTEM_TBB=OFF `
-                -DUSE_SYSTEM_ROBIN=OFF
+                -DUSE_SYSTEM_ROBIN=OFF `
+                -DUSE_SYSTEM_FLANN=OFF
 
       - name: Build C++ Core
         run: cmake --build build --config Release --parallel
@@ -200,7 +202,8 @@ jobs:
                 -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
                 -DUSE_SYSTEM_EIGEN3=ON \
                 -DUSE_SYSTEM_TBB=ON \
-                -DUSE_SYSTEM_ROBIN=OFF
+                -DUSE_SYSTEM_ROBIN=OFF \
+                -DUSE_SYSTEM_FLANN=OFF
           cmake --build build/core --config Release --parallel
 
       - name: Install KISS-Matcher Core

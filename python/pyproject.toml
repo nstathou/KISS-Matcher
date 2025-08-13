@@ -48,7 +48,8 @@ cmake.build-type = "Release"
 cmake.args = [
     "-DUSE_SYSTEM_EIGEN3=OFF",
     "-DUSE_SYSTEM_TBB=OFF",
-    "-DUSE_SYSTEM_ROBIN=OFF"
+    "-DUSE_SYSTEM_ROBIN=OFF",
+    "-DUSE_SYSTEM_FLANN=OFF"
 ]
 cmake.define = {
     CMAKE_CXX_STANDARD = "17",

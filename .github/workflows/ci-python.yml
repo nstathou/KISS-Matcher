@@ -47,6 +47,7 @@ jobs:
             USE_SYSTEM_EIGEN3=OFF
             USE_SYSTEM_TBB=OFF
             USE_SYSTEM_ROBIN=OFF
+            USE_SYSTEM_FLANN=OFF
             CMAKE_BUILD_PARALLEL_LEVEL=2
 
           # Test command
