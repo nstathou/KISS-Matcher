@@ -25,16 +25,23 @@
 option(PMC_BUILD_SHARED "Build pmc as a shared library (.so)" OFF)
 
 include(FetchContent)
-FetchContent_Declare(robin URL https://github.com/MIT-SPARK/ROBIN/archive/refs/tags/v.1.2.4.tar.gz)
-FetchContent_GetProperties(robin)
-if(NOT robin)
-  FetchContent_Populate(robin)
+FetchContent_Declare(
+  robin
+  GIT_REPOSITORY https://github.com/MIT-SPARK/ROBIN.git
+  GIT_TAG v.1.2.4
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(robin)
+
+# Ensure ROBIN is treated as a system library to avoid warnings
+if(TARGET robin)
   if(${CMAKE_VERSION} GREATER_EQUAL 3.25)
-    add_subdirectory(${robin_SOURCE_DIR} ${robin_BINARY_DIR} SYSTEM EXCLUDE_FROM_ALL)
+    # CMake 3.25+ has built-in system include support
+    get_target_property(robin_include_dirs robin INTERFACE_INCLUDE_DIRECTORIES)
+    set_target_properties(robin PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${robin_include_dirs}")
   else()
-    # Emulate the SYSTEM flag introduced in CMake 3.25. Withouth this flag the compiler will
-    # consider this 3rdparty headers as source code and fail due the -Werror flag.
-    add_subdirectory(${robin_SOURCE_DIR} ${robin_BINARY_DIR} EXCLUDE_FROM_ALL)
+    # For older CMake versions, manually set as system includes
     get_target_property(robin_include_dirs robin INTERFACE_INCLUDE_DIRECTORIES)
     set_target_properties(robin PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${robin_include_dirs}")
   endif()

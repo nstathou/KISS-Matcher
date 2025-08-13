@@ -1,5 +1,10 @@
 [build-system]
-requires = ["scikit_build_core", "pybind11"]
+requires = [
+    "scikit-build-core>=0.5.0",
+    "pybind11>=2.10.0",
+    "cmake>=3.24",
+    "ninja"
+]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -38,3 +43,13 @@ dependencies = [
 
 [tool.scikit-build]
 wheel.packages = ["kiss_matcher"]
+cmake.source-dir = "../cpp/kiss_matcher"
+cmake.build-type = "Release"
+cmake.args = [
+    "-DUSE_SYSTEM_EIGEN3=OFF",
+    "-DUSE_SYSTEM_TBB=OFF",
+    "-DUSE_SYSTEM_ROBIN=OFF"
+]
+cmake.define = {
+    CMAKE_CXX_STANDARD = "17"
+}

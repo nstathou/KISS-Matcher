@@ -101,7 +101,7 @@ jobs:
               -DUSE_CCACHE=ON \
               -DUSE_SYSTEM_EIGEN3=ON \
               -DUSE_SYSTEM_TBB=ON \
-              -DUSE_SYSTEM_ROBIN=ON \
+              -DUSE_SYSTEM_ROBIN=OFF \
             --parallel-workers $(nproc)
 
       - name: Build ROS2 wrapper

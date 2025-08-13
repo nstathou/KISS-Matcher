@@ -86,42 +86,34 @@ jobs:
           # Skip 32-bit builds and PyPy
           CIBW_SKIP: "*-win32 *-manylinux_i686 pp*"
 
-          # Linux specific settings
+          # Linux specific settings (manylinux containers use yum)
           CIBW_BEFORE_BUILD_LINUX: |
-            yum install -y epel-release centos-release-scl devtoolset-11 &&
-            yum install -y devtoolset-11-gcc-c++ cmake3 ninja-build ccache eigen3-devel tbb-devel lz4-devel &&
-            ln -sf /usr/bin/cmake3 /usr/bin/cmake
+            yum install -y git cmake3 ninja-build
+            ln -sf /usr/bin/cmake3 /usr/bin/cmake || true
 
           # macOS specific settings
           CIBW_BEFORE_BUILD_MACOS: |
-            brew install cmake ninja ccache eigen tbb lz4
+            brew install git cmake ninja
 
           # Windows specific settings
           CIBW_BEFORE_BUILD_WINDOWS: |
-            choco install cmake ninja ccache
+            choco install git cmake ninja
 
-          # Set environment variables for ccache
+          # Set build environment variables
           CIBW_ENVIRONMENT_LINUX: >
-            CMAKE_C_COMPILER_LAUNCHER=ccache
-            CMAKE_CXX_COMPILER_LAUNCHER=ccache
-            USE_CCACHE=ON
-            USE_SYSTEM_EIGEN3=ON
-            USE_SYSTEM_TBB=ON
-            USE_SYSTEM_ROBIN=ON
-
-          CIBW_ENVIRONMENT_MACOS: >
-            CMAKE_C_COMPILER_LAUNCHER=ccache
-            CMAKE_CXX_COMPILER_LAUNCHER=ccache
-            USE_CCACHE=ON
-            USE_SYSTEM_EIGEN3=ON
-            USE_SYSTEM_TBB=ON
-            USE_SYSTEM_ROBIN=ON
-
-          CIBW_ENVIRONMENT_WINDOWS: >
-            USE_CCACHE=OFF
             USE_SYSTEM_EIGEN3=OFF
             USE_SYSTEM_TBB=OFF
-            USE_SYSTEM_ROBIN=ON
+            USE_SYSTEM_ROBIN=OFF
+
+          CIBW_ENVIRONMENT_MACOS: >
+            USE_SYSTEM_EIGEN3=OFF
+            USE_SYSTEM_TBB=OFF
+            USE_SYSTEM_ROBIN=OFF
+
+          CIBW_ENVIRONMENT_WINDOWS: >
+            USE_SYSTEM_EIGEN3=OFF
+            USE_SYSTEM_TBB=OFF
+            USE_SYSTEM_ROBIN=OFF
 
           # Test command
           CIBW_TEST_COMMAND: "python -c \"import kiss_matcher; print('Kiss-Matcher Python binding imported successfully')\""
