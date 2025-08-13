@@ -66,8 +66,9 @@ jobs:
             tbb \
             lz4 \
             flann \
-            pcl \
             git
+          # PCL can be problematic on macOS, try to install it separately
+          brew install pcl || echo "PCL installation failed, will use bundled version"
 
       - name: Setup MSVC (Windows)
         if: runner.os == 'Windows'

@@ -51,5 +51,6 @@ cmake.args = [
     "-DUSE_SYSTEM_ROBIN=OFF"
 ]
 cmake.define = {
-    CMAKE_CXX_STANDARD = "17"
+    CMAKE_CXX_STANDARD = "17",
+    CMAKE_POSITION_INDEPENDENT_CODE = "ON"
 }
