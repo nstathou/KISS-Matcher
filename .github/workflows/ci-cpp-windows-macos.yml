@@ -67,12 +67,14 @@ jobs:
           brew install ninja
           brew install ccache
           brew install pkg-config
+          brew install llvm
 
           # Verify installations
           pkg-config --modversion eigen3 || echo "Eigen3 installed via Homebrew"
           pkg-config --modversion tbb || echo "TBB installed via Homebrew"
           which ninja
           which cmake
+          ls -la /opt/homebrew/opt/llvm/bin/
 
       - name: Setup ccache (macOS)
         if: runner.os == 'macOS'
@@ -99,8 +101,9 @@ jobs:
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'
         run: |
-          export CC=${{ matrix.cc }}
-          export CXX=${{ matrix.cxx }}
+          # Use LLVM clang for OpenMP support
+          export CC=/opt/homebrew/opt/llvm/bin/clang
+          export CXX=/opt/homebrew/opt/llvm/bin/clang++
 
           # Set up Homebrew paths
           export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
