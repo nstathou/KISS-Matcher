@@ -11,77 +11,102 @@ def read_pcd(pcd_path):
     Read PCD file without Open3D dependency.
     Supports ASCII and binary PCD formats.
     """
-    with open(pcd_path, 'r') as f:
-        lines = f.readlines()
-
-    # Parse header
+    # First, read the header as text to determine format
     header_info = {}
-    data_start_idx = 0
+    header_lines = []
 
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if line.startswith('VERSION'):
-            header_info['version'] = line.split()[1]
-        elif line.startswith('FIELDS'):
-            header_info['fields'] = line.split()[1:]
-        elif line.startswith('SIZE'):
-            header_info['size'] = [int(x) for x in line.split()[1:]]
-        elif line.startswith('TYPE'):
-            header_info['type'] = line.split()[1:]
-        elif line.startswith('COUNT'):
-            header_info['count'] = [int(x) for x in line.split()[1:]]
-        elif line.startswith('WIDTH'):
-            header_info['width'] = int(line.split()[1])
-        elif line.startswith('HEIGHT'):
-            header_info['height'] = int(line.split()[1])
-        elif line.startswith('VIEWPOINT'):
-            header_info['viewpoint'] = [float(x) for x in line.split()[1:]]
-        elif line.startswith('POINTS'):
-            header_info['points'] = int(line.split()[1])
-        elif line.startswith('DATA'):
-            header_info['data'] = line.split()[1]
-            data_start_idx = i + 1
-            break
+    with open(pcd_path, 'rb') as f:
+        while True:
+            line = f.readline()
+            if isinstance(line, bytes):
+                try:
+                    line_str = line.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    # If we can't decode, we've hit the binary data
+                    break
+            else:
+                line_str = line.strip()
+
+            header_lines.append(line_str)
+
+            if line_str.startswith('VERSION'):
+                header_info['version'] = line_str.split()[1]
+            elif line_str.startswith('FIELDS'):
+                header_info['fields'] = line_str.split()[1:]
+            elif line_str.startswith('SIZE'):
+                header_info['size'] = [int(x) for x in line_str.split()[1:]]
+            elif line_str.startswith('TYPE'):
+                header_info['type'] = line_str.split()[1:]
+            elif line_str.startswith('COUNT'):
+                header_info['count'] = [int(x) for x in line_str.split()[1:]]
+            elif line_str.startswith('WIDTH'):
+                header_info['width'] = int(line_str.split()[1])
+            elif line_str.startswith('HEIGHT'):
+                header_info['height'] = int(line_str.split()[1])
+            elif line_str.startswith('VIEWPOINT'):
+                header_info['viewpoint'] = [float(x) for x in line_str.split()[1:]]
+            elif line_str.startswith('POINTS'):
+                header_info['points'] = int(line_str.split()[1])
+            elif line_str.startswith('DATA'):
+                header_info['data'] = line_str.split()[1]
+                break
+
+    # Calculate header size in bytes
+    header_size = sum(len(line.encode('utf-8')) + 1 for line in header_lines)
 
     # Read point data
     if header_info.get('data', '').upper() == 'ASCII':
         # ASCII format
-        points = []
-        for line in lines[data_start_idx:]:
-            line = line.strip()
-            if line:
-                values = [float(x) for x in line.split()]
-                # Extract x, y, z (first 3 coordinates)
-                if len(values) >= 3:
-                    points.append(values[:3])
-        return np.array(points)
+        with open(pcd_path, 'r') as f:
+            lines = f.readlines()
+            # Find data start
+            data_start_idx = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith('DATA'):
+                    data_start_idx = i + 1
+                    break
+
+            points = []
+            for line in lines[data_start_idx:]:
+                line = line.strip()
+                if line:
+                    values = [float(x) for x in line.split()]
+                    # Extract x, y, z (first 3 coordinates)
+                    if len(values) >= 3:
+                        points.append(values[:3])
+            return np.array(points)
 
     elif header_info.get('data', '').upper() == 'BINARY':
-        # Binary format - simplified implementation
-        # Read remaining file as binary
+        # Binary format
         with open(pcd_path, 'rb') as f:
-            # Skip to data section
-            for _ in range(data_start_idx):
-                f.readline()
+            # Skip header
+            f.seek(header_size)
 
             points = []
             num_points = header_info.get('points', 0)
+            fields = header_info.get('fields', [])
 
-            # Assuming float32 for x, y, z
+            # Find x, y, z indices
+            x_idx = fields.index('x') if 'x' in fields else 0
+            y_idx = fields.index('y') if 'y' in fields else 1
+            z_idx = fields.index('z') if 'z' in fields else 2
+
+            # Read binary data
             for _ in range(num_points):
-                try:
-                    x = struct.unpack('f', f.read(4))[0]
-                    y = struct.unpack('f', f.read(4))[0]
-                    z = struct.unpack('f', f.read(4))[0]
+                field_values = []
+                # Read all fields for this point
+                for field in fields:
+                    try:
+                        value = struct.unpack('<f', f.read(4))[0]  # little endian float32
+                        field_values.append(value)
+                    except:
+                        break
+
+                if len(field_values) >= 3:
+                    x = field_values[x_idx]
+                    y = field_values[y_idx]
+                    z = field_values[z_idx]
                     points.append([x, y, z])
-
-                    # Skip additional fields if any
-                    total_fields = len(header_info.get('fields', []))
-                    if total_fields > 3:
-                        f.read(4 * (total_fields - 3))
-
-                except:
-                    break
 
             return np.array(points)
 
