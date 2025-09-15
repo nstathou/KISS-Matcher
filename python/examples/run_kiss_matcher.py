@@ -125,21 +125,21 @@ if __name__ == "__main__":
         "/source_cloud",
         points=src.astype(np.float32),
         colors=np.array([[200, 200, 200] for _ in range(src.shape[0])], dtype=np.uint8),  # Gray
-        point_size=0.003,
+        point_size=0.03,
     )
 
     server.scene.add_point_cloud(
         "/target_cloud",
         points=tgt.astype(np.float32),
         colors=np.array([[90, 165, 230] for _ in range(tgt.shape[0])], dtype=np.uint8),  # Cyan
-        point_size=0.003,
+        point_size=0.03,
     )
 
     server.scene.add_point_cloud(
         "/transformed_source",
         points=transformed_src.astype(np.float32),
         colors=np.array([[255, 160, 0] for _ in range(transformed_src.shape[0])], dtype=np.uint8),  # Orange
-        point_size=0.003,
+        point_size=0.03,
     )
 
     print("Point clouds added to visualization:")

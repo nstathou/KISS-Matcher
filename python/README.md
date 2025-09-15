@@ -69,6 +69,9 @@ python3 examples/run_kiss_matcher.py \
 
 ### Example B-0. Perform registration two point clouds from different viewpoints of Velodyne 16 at MIT campus
 
+**Update (Sep 15, 2025):** I now use Viser for visualization because it is lighter than Open3D-based visualization.
+To access it, simply open `http://localhost:8080` in your browser.
+
 ```
 python3 examples/run_kiss_matcher.py \
     --src_path data/Vel16/src.pcd \
