@@ -51,6 +51,8 @@ jobs:
           C:\vcpkg\vcpkg.exe install tbb:${{ matrix.vcpkg_triplet }}
           C:\vcpkg\vcpkg.exe install flann:${{ matrix.vcpkg_triplet }}
           C:\vcpkg\vcpkg.exe install lz4:${{ matrix.vcpkg_triplet }}
+          echo "Installed packages:"
+          C:\vcpkg\vcpkg.exe list
           echo "VCPKG_ROOT=C:\vcpkg" >> $GITHUB_ENV
           echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" >> $GITHUB_ENV
 
@@ -88,6 +90,8 @@ jobs:
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
         run: |
+          echo "VCPKG_ROOT: ${{ env.VCPKG_ROOT }}"
+          echo "CMAKE_TOOLCHAIN_FILE: ${{ env.CMAKE_TOOLCHAIN_FILE }}"
           cmake -S cpp/kiss_matcher `
                 -B build `
                 -G "${{ matrix.generator }}" `
@@ -97,7 +101,8 @@ jobs:
                 -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} `
                 -DUSE_SYSTEM_EIGEN3=ON `
                 -DUSE_SYSTEM_TBB=ON `
-                -DUSE_SYSTEM_ROBIN=OFF
+                -DUSE_SYSTEM_ROBIN=OFF `
+                -DUSE_SYSTEM_LZ4=ON
 
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'

@@ -44,7 +44,21 @@ include(3rdparty/find_dependencies.cmake)
 include(cmake/CompilerOptions.cmake)
 
 # NOTE(hlim): Without this line, pybinded KISS-Matcher does not work
-find_library(LZ4_LIBRARY lz4 REQUIRED)
+# Try to find LZ4 using find_package first (works with vcpkg), fallback to find_library
+find_package(lz4 QUIET)
+if(NOT lz4_FOUND)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(LZ4 QUIET liblz4)
+  endif()
+  if(NOT LZ4_FOUND)
+    find_library(LZ4_LIBRARY NAMES lz4 liblz4 REQUIRED)
+    if(LZ4_LIBRARY)
+      add_library(lz4::lz4 UNKNOWN IMPORTED)
+      set_target_properties(lz4::lz4 PROPERTIES IMPORTED_LOCATION ${LZ4_LIBRARY})
+    endif()
+  endif()
+endif()
 
 include(FindOpenMP) #The best way to set proper compiler settings for using OpenMP in all platforms
 if (OPENMP_FOUND) #The best way to set proper compiler settings for using OpenMP in all platforms
@@ -71,8 +85,17 @@ add_library(${TARGET_NAME} STATIC
 add_library(kiss_matcher::kiss_matcher_core ALIAS kiss_matcher_core)
 
 target_link_libraries(${TARGET_NAME}
-    PUBLIC Eigen3::Eigen robin::robin ${OpenMP_LIBS} ${EIGEN3_LIBS} TBB::tbb ${LZ4_LIBRARY}
+    PUBLIC Eigen3::Eigen robin::robin ${OpenMP_LIBS} ${EIGEN3_LIBS} TBB::tbb
 )
+
+# Link LZ4 library with proper target handling
+if(TARGET lz4::lz4)
+    target_link_libraries(${TARGET_NAME} PUBLIC lz4::lz4)
+elseif(LZ4_LIBRARIES)
+    target_link_libraries(${TARGET_NAME} PUBLIC ${LZ4_LIBRARIES})
+elseif(LZ4_LIBRARY)
+    target_link_libraries(${TARGET_NAME} PUBLIC ${LZ4_LIBRARY})
+endif()
 
 # To make kiss_matcher::core global for Pybinding
 set_global_target_properties(${TARGET_NAME})
