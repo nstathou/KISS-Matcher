@@ -60,12 +60,11 @@ jobs:
           # Update Homebrew
           brew update
 
-          # Install dependencies
+          # Install dependencies (cmake is already available on runner)
           brew install eigen
           brew install tbb
           brew install flann
           brew install ninja
-          brew install cmake
           brew install ccache
           brew install pkg-config
 
