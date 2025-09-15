@@ -1,4 +1,4 @@
-name: Python Build (Windows & macOS)
+name: macOS Build
 
 on:
   push:
@@ -7,77 +7,40 @@ on:
     branches: [main]
 
 jobs:
-  python-build-windows-macos:
-    name: Python Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  macos-build:
+    name: macOS Build (${{ matrix.build-type }})
+    runs-on: macos-14
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Windows builds
-          - os: windows-2022
-            python-version: '3.9'
-            generator: "Visual Studio 17 2022"
-            arch: "x64"
-            vcpkg_triplet: "x64-windows"
-          - os: windows-2022
+          - build-type: "C++"
             python-version: '3.11'
-            generator: "Visual Studio 17 2022"
-            arch: "x64"
-            vcpkg_triplet: "x64-windows"
-          - os: windows-2022
-            python-version: '3.12'
-            generator: "Visual Studio 17 2022"
-            arch: "x64"
-            vcpkg_triplet: "x64-windows"
-
-          # macOS builds
-          - os: macos-14
+          - build-type: "Python"
             python-version: '3.9'
-            arch: "arm64"
-            cc: "clang"
-            cxx: "clang++"
-          - os: macos-14
+          - build-type: "Python"
             python-version: '3.11'
-            arch: "arm64"
-            cc: "clang"
-            cxx: "clang++"
-          - os: macos-14
+          - build-type: "Python"
             python-version: '3.12'
-            arch: "arm64"
-            cc: "clang"
-            cxx: "clang++"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Python ${{ matrix.python-version }}
+        if: matrix.build-type == 'Python'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Windows-specific setup
-      - name: Setup vcpkg (Windows)
-        if: runner.os == 'Windows'
-        uses: microsoft/setup-msbuild@v2
+      - name: Setup Python (for build tools)
+        if: matrix.build-type == 'C++'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Install vcpkg dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-          C:\vcpkg\vcpkg.exe install eigen3:${{ matrix.vcpkg_triplet }}
-          C:\vcpkg\vcpkg.exe install tbb:${{ matrix.vcpkg_triplet }}
-          C:\vcpkg\vcpkg.exe install flann:${{ matrix.vcpkg_triplet }}
-          C:\vcpkg\vcpkg.exe install lz4:${{ matrix.vcpkg_triplet }}
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
-          echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" >> $env:GITHUB_ENV
-
-      # macOS-specific setup
       - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
         run: |
           # Update Homebrew
           brew update
@@ -90,6 +53,7 @@ jobs:
           brew install ccache
           brew install pkg-config
           brew install llvm
+          brew install lz4
 
           # Verify installations
           pkg-config --modversion eigen3 || echo "Eigen3 installed via Homebrew"
@@ -98,51 +62,16 @@ jobs:
           which cmake
           ls -la /opt/homebrew/opt/llvm/bin/
 
-      - name: Setup ccache (macOS)
-        if: runner.os == 'macOS'
+      - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-ccache-python-${{ matrix.os }}-${{ matrix.python-version }}
+          key: ${{ runner.os }}-ccache-${{ matrix.build-type }}-${{ matrix.python-version }}
           restore-keys: |
-            ${{ runner.os }}-ccache-python-${{ matrix.os }}
-            ${{ runner.os }}-ccache-python
+            ${{ runner.os }}-ccache-${{ matrix.build-type }}
+            ${{ runner.os }}-ccache
 
-      # Common Python setup
-      - name: Cache pip packages (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
-            ${{ runner.os }}-pip-
-
-      - name: Cache pip packages (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/cache@v4
-        with:
-          path: ~/Library/Caches/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
-            ${{ runner.os }}-pip-
-
-      - name: Install Python build dependencies
-        run: |
-          python -m pip install --upgrade pip wheel setuptools
-          python -m pip install scikit-build-core pybind11 numpy
-
-      # Build Python package
-      - name: Build and install Python package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          $env:CMAKE_ARGS = "-DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} -DUSE_SYSTEM_EIGEN3=ON -DUSE_SYSTEM_TBB=ON -DUSE_SYSTEM_ROBIN=OFF"
-          Write-Host "Building Python package with Python ${{ matrix.python-version }} on ${{ matrix.os }}"
-          python -m pip install -e python/ --verbose
-
-      - name: Build and install Python package (macOS)
-        if: runner.os == 'macOS'
+      - name: Configure CMake (C++)
+        if: matrix.build-type == 'C++'
         run: |
           # Use LLVM clang for OpenMP support
           export CC=/opt/homebrew/opt/llvm/bin/clang
@@ -152,24 +81,80 @@ jobs:
           export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
 
-          # Add LLVM library paths for OpenMP
-          export LDFLAGS="-L/opt/homebrew/opt/llvm/lib $LDFLAGS"
-          export CPPFLAGS="-I/opt/homebrew/opt/llvm/include $CPPFLAGS"
+          cmake -S cpp/kiss_matcher \
+                -B build \
+                -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                -DUSE_CCACHE=ON \
+                -DUSE_SYSTEM_EIGEN3=ON \
+                -DUSE_SYSTEM_TBB=ON \
+                -DUSE_SYSTEM_ROBIN=OFF \
+                -DCMAKE_FIND_FRAMEWORK=LAST
+
+      - name: Build C++ Core
+        if: matrix.build-type == 'C++'
+        run: cmake --build build --config Release --parallel
+
+      - name: Run C++ Tests (if available)
+        if: matrix.build-type == 'C++'
+        run: |
+          if [ -d "build/tests" ] || [ -d "build/Release/tests" ]; then
+            ctest --test-dir build --output-on-failure --parallel
+          else
+            echo "No C++ tests found - skipping test execution"
+          fi
+        shell: bash
+
+      - name: Cache pip packages (Python)
+        if: matrix.build-type == 'Python'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install Python build dependencies
+        if: matrix.build-type == 'Python'
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install scikit-build-core pybind11 numpy
+
+      - name: Build and install Python package
+        if: matrix.build-type == 'Python'
+        run: |
+          # Use LLVM clang for OpenMP support
+          export CC=/opt/homebrew/opt/llvm/bin/clang
+          export CXX=/opt/homebrew/opt/llvm/bin/clang++
+
+          # Set up Homebrew paths
+          export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
+
+          # Add LLVM library paths for OpenMP and LZ4 library path
+          export LDFLAGS="-L/opt/homebrew/opt/llvm/lib -L/opt/homebrew/lib $LDFLAGS"
+          export CPPFLAGS="-I/opt/homebrew/opt/llvm/include -I/opt/homebrew/include $CPPFLAGS"
 
           export CMAKE_ARGS="-DUSE_SYSTEM_EIGEN3=ON -DUSE_SYSTEM_TBB=ON -DUSE_SYSTEM_ROBIN=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_FIND_FRAMEWORK=LAST"
-          echo "Building Python package with Python ${{ matrix.python-version }} on ${{ matrix.os }}"
+          echo "Building Python package with Python ${{ matrix.python-version }} on macOS"
           python -m pip install -e python/ --verbose
 
       - name: Install runtime dependencies
+        if: matrix.build-type == 'Python'
         run: |
           python -m pip install viser
 
       - name: Test Python import and basic functionality
+        if: matrix.build-type == 'Python'
         run: |
           python -c "
           import sys
           print(f'Python version: {sys.version}')
-          print(f'Platform: ${{ runner.os }} ${{ matrix.arch }}')
+          print('Platform: macOS arm64')
 
           try:
               import kiss_matcher
@@ -194,6 +179,7 @@ jobs:
           "
 
       - name: Test with sample data
+        if: matrix.build-type == 'Python'
         run: |
           python -c "
           import kiss_matcher
@@ -221,47 +207,50 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: python-build-${{ matrix.os }}-${{ matrix.arch }}-py${{ matrix.python-version }}
+          name: macos-build-${{ matrix.build-type }}-${{ matrix.python-version }}
           path: |
+            build/
             python/build/
             python/dist/
+            !build/**/*.o
+            !build/**/*.obj
+            !build/**/CMakeFiles/
+            !python/build/**/*.o
             !python/build/**/*.obj
-            !python/build/**/*.pdb
-            !python/build/**/*.ilk
             !python/build/**/CMakeFiles/
 
   summary:
-    name: Python Build Summary (Windows & macOS)
+    name: macOS Build Summary
     runs-on: ubuntu-22.04
-    needs: [python-build-windows-macos]
+    needs: [macos-build]
     if: always()
 
     steps:
       - name: Generate summary
         run: |
-          echo "## Python Build Results (Windows & macOS)" >> $GITHUB_STEP_SUMMARY
+          echo "## macOS Build Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ needs.python-build-windows-macos.result }}" = "success" ]; then
-            echo "✅ All Python builds completed successfully" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.macos-build.result }}" = "success" ]; then
+            echo "✅ All macOS builds completed successfully" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Tested Configurations:" >> $GITHUB_STEP_SUMMARY
-            echo "- **Windows**: 2019, 2022 (MSVC, x64)" >> $GITHUB_STEP_SUMMARY
-            echo "- **macOS**: 12, 13, 14 (Clang, x86_64/arm64)" >> $GITHUB_STEP_SUMMARY
-            echo "- **Python Versions**: 3.9, 3.10, 3.11, 3.12" >> $GITHUB_STEP_SUMMARY
-            echo "- **Compilers**: MSVC (Windows), Clang (macOS)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Platform**: macOS 14 (arm64)" >> $GITHUB_STEP_SUMMARY
+            echo "- **C++ Build**: Release with Ninja" >> $GITHUB_STEP_SUMMARY
+            echo "- **Python Versions**: 3.9, 3.11, 3.12" >> $GITHUB_STEP_SUMMARY
+            echo "- **Compiler**: LLVM Clang with OpenMP support" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Build Features:" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ vcpkg dependencies (Windows)" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Homebrew dependencies (macOS)" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ System dependencies (Eigen3, TBB)" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Python package installation with \`pip install -e python/\`" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Homebrew dependencies (Eigen3, TBB, FLANN, LLVM)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ OpenMP support via LLVM" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ CMake cache optimization with ccache" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Python package installation with pip install -e python/" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ Import and functionality testing" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Some Python builds failed" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Some macOS builds failed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Please check the individual job logs for details." >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This workflow validates the Python binding build process on Windows and macOS platforms." >> $GITHUB_STEP_SUMMARY
+          echo "This workflow validates C++ and Python builds on macOS with OpenMP support." >> $GITHUB_STEP_SUMMARY

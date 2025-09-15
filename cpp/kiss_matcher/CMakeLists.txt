@@ -44,10 +44,13 @@ include(3rdparty/find_dependencies.cmake)
 include(cmake/CompilerOptions.cmake)
 
 # NOTE(hlim): Without this line, pybinded KISS-Matcher does not work
-# Find LZ4 using vcpkg-compatible approach
+# Find LZ4 library
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(LZ4 QUIET liblz4)
+  if(LZ4_FOUND)
+    set(LZ4_LIBRARIES ${LZ4_LIBRARIES})
+  endif()
 endif()
 
 if(NOT LZ4_FOUND)
@@ -59,9 +62,16 @@ if(NOT LZ4_FOUND)
 endif()
 
 if(NOT LZ4_FOUND)
-  find_library(LZ4_LIBRARY NAMES lz4 liblz4 REQUIRED)
-  set(LZ4_LIBRARIES ${LZ4_LIBRARY})
+  find_library(LZ4_LIBRARY NAMES lz4 liblz4 REQUIRED
+    HINTS /opt/homebrew/lib /usr/local/lib)
+  if(LZ4_LIBRARY)
+    set(LZ4_LIBRARIES ${LZ4_LIBRARY})
+    set(LZ4_FOUND TRUE)
+  endif()
 endif()
+
+message(STATUS "LZ4 found: ${LZ4_FOUND}")
+message(STATUS "LZ4 libraries: ${LZ4_LIBRARIES}")
 
 include(FindOpenMP) #The best way to set proper compiler settings for using OpenMP in all platforms
 if (OPENMP_FOUND) #The best way to set proper compiler settings for using OpenMP in all platforms
