@@ -54,6 +54,7 @@ jobs:
           brew install pkg-config
           brew install llvm
           brew install lz4
+          brew install libomp
 
           # Verify installations
           pkg-config --modversion eigen3 || echo "Eigen3 installed via Homebrew"
@@ -127,20 +128,24 @@ jobs:
       - name: Build and install Python package
         if: matrix.build-type == 'Python'
         run: |
-          # Use LLVM clang for OpenMP support
-          export CC=/opt/homebrew/opt/llvm/bin/clang
-          export CXX=/opt/homebrew/opt/llvm/bin/clang++
+          # Use system clang to match Python's C++ stdlib (critical for symbol compatibility)
+          export CC=clang
+          export CXX=clang++
+
+          # Explicitly use system libc++ (same as Python framework)
+          export CXXFLAGS="-stdlib=libc++ $CXXFLAGS"
+          export LDFLAGS="-stdlib=libc++ -L/opt/homebrew/lib $LDFLAGS"
 
           # Set up Homebrew paths
           export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
+          export CPPFLAGS="-I/opt/homebrew/include $CPPFLAGS"
 
-          # Add LLVM library paths for OpenMP and LZ4 library path
-          export LDFLAGS="-L/opt/homebrew/opt/llvm/lib -L/opt/homebrew/lib $LDFLAGS"
-          export CPPFLAGS="-I/opt/homebrew/opt/llvm/include -I/opt/homebrew/include $CPPFLAGS"
+          # Configure OpenMP for system clang with Homebrew libomp
+          export OpenMP_ROOT="/opt/homebrew"
+          export CMAKE_ARGS="-DUSE_SYSTEM_EIGEN3=ON -DUSE_SYSTEM_TBB=ON -DUSE_SYSTEM_ROBIN=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_FIND_FRAMEWORK=LAST -DOpenMP_ROOT=/opt/homebrew -DOpenMP_CXX_FLAGS='-Xpreprocessor -fopenmp' -DOpenMP_CXX_LIB_NAMES=omp -DOpenMP_omp_LIBRARY=/opt/homebrew/lib/libomp.dylib"
 
-          export CMAKE_ARGS="-DUSE_SYSTEM_EIGEN3=ON -DUSE_SYSTEM_TBB=ON -DUSE_SYSTEM_ROBIN=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_FIND_FRAMEWORK=LAST"
-          echo "Building Python package with Python ${{ matrix.python-version }} on macOS"
+          echo "Building Python package with Python ${{ matrix.python-version }} on macOS using system clang"
           python -m pip install -e python/ --verbose
 
       - name: Install runtime dependencies
