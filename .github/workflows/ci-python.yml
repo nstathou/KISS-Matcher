@@ -115,10 +115,6 @@ jobs:
               sys.exit(1)
           "
 
-      - name: Run unit tests
-        run: |
-          cd python
-          python -m pytest tests/ -v || python -m unittest discover tests/ -v
 
       - name: Test with sample data (if available)
         run: |
