@@ -71,6 +71,7 @@ jobs:
           C:\vcpkg\vcpkg.exe install eigen3:${{ matrix.vcpkg_triplet }}
           C:\vcpkg\vcpkg.exe install tbb:${{ matrix.vcpkg_triplet }}
           C:\vcpkg\vcpkg.exe install flann:${{ matrix.vcpkg_triplet }}
+          C:\vcpkg\vcpkg.exe install lz4:${{ matrix.vcpkg_triplet }}
           echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
           echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" >> $env:GITHUB_ENV
 
