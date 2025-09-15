@@ -1,0 +1,185 @@
+name: C++ Build (Windows & macOS)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cpp-build-windows-macos:
+    name: C++ Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows builds
+          - os: windows-2022
+            generator: "Visual Studio 17 2022"
+            arch: "x64"
+            vcpkg_triplet: "x64-windows"
+          - os: windows-2019
+            generator: "Visual Studio 16 2019"
+            arch: "x64"
+            vcpkg_triplet: "x64-windows"
+
+          # macOS builds
+          - os: macos-14
+            generator: "Ninja"
+            arch: "arm64"
+            cc: "clang"
+            cxx: "clang++"
+          - os: macos-13
+            generator: "Ninja"
+            arch: "x86_64"
+            cc: "clang"
+            cxx: "clang++"
+          - os: macos-12
+            generator: "Ninja"
+            arch: "x86_64"
+            cc: "clang"
+            cxx: "clang++"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for build tools)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Windows-specific setup
+      - name: Setup vcpkg (Windows)
+        if: runner.os == 'Windows'
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install vcpkg dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+          C:\vcpkg\vcpkg.exe install eigen3:${{ matrix.vcpkg_triplet }}
+          C:\vcpkg\vcpkg.exe install tbb:${{ matrix.vcpkg_triplet }}
+          C:\vcpkg\vcpkg.exe install flann:${{ matrix.vcpkg_triplet }}
+          echo "VCPKG_ROOT=C:\vcpkg" >> $GITHUB_ENV
+          echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" >> $GITHUB_ENV
+
+      # macOS-specific setup
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install eigen tbb flann ninja cmake ccache pkg-config
+
+      - name: Setup ccache (macOS)
+        if: runner.os == 'macOS'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-ccache-cpp-${{ matrix.os }}
+          restore-keys: ${{ runner.os }}-ccache-cpp
+
+      # Common build steps
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S cpp/kiss_matcher `
+                -B build `
+                -G "${{ matrix.generator }}" `
+                -A ${{ matrix.arch }} `
+                -DCMAKE_BUILD_TYPE=Release `
+                -DCMAKE_TOOLCHAIN_FILE=${{ env.CMAKE_TOOLCHAIN_FILE }} `
+                -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} `
+                -DUSE_SYSTEM_EIGEN3=ON `
+                -DUSE_SYSTEM_TBB=ON `
+                -DUSE_SYSTEM_ROBIN=OFF
+
+      - name: Configure CMake (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          export CC=${{ matrix.cc }}
+          export CXX=${{ matrix.cxx }}
+          cmake -S cpp/kiss_matcher \
+                -B build \
+                -G "${{ matrix.generator }}" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                -DUSE_CCACHE=ON \
+                -DUSE_SYSTEM_EIGEN3=ON \
+                -DUSE_SYSTEM_TBB=ON \
+                -DUSE_SYSTEM_ROBIN=OFF
+
+      - name: Build C++ Core
+        run: cmake --build build --config Release --parallel
+
+      - name: Run C++ Tests (if available)
+        run: |
+          if (Test-Path "build/tests") {
+            ctest --test-dir build --output-on-failure --parallel -C Release
+          } elseif (Test-Path "build/Release/tests") {
+            ctest --test-dir build --output-on-failure --parallel -C Release
+          } else {
+            Write-Host "No C++ tests found - skipping test execution"
+          }
+        shell: pwsh
+        if: runner.os == 'Windows'
+
+      - name: Run C++ Tests (if available) (macOS)
+        run: |
+          if [ -d "build/tests" ] || [ -d "build/Release/tests" ]; then
+            ctest --test-dir build --output-on-failure --parallel
+          else
+            echo "No C++ tests found - skipping test execution"
+          fi
+        shell: bash
+        if: runner.os == 'macOS'
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-build-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            build/
+            !build/**/*.obj
+            !build/**/*.pdb
+            !build/**/*.ilk
+            !build/**/CMakeFiles/
+
+  summary:
+    name: C++ Build Summary (Windows & macOS)
+    runs-on: ubuntu-22.04
+    needs: [cpp-build-windows-macos]
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## C++ Build Results (Windows & macOS)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.cpp-build-windows-macos.result }}" = "success" ]; then
+            echo "✅ All C++ builds completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Tested Configurations:" >> $GITHUB_STEP_SUMMARY
+            echo "- **Windows**: 2019, 2022 (Visual Studio, x64)" >> $GITHUB_STEP_SUMMARY
+            echo "- **macOS**: 12, 13, 14 (Clang, x86_64/arm64)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Compilers**: MSVC (Windows), Clang (macOS)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Build Features:" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ vcpkg dependencies (Windows)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Homebrew dependencies (macOS)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ System dependencies (Eigen3, TBB)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ CMake cache optimization" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some C++ builds failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please check the individual job logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow validates the C++ core build process on Windows and macOS platforms." >> $GITHUB_STEP_SUMMARY
