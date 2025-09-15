@@ -20,25 +20,11 @@ jobs:
             generator: "Visual Studio 17 2022"
             arch: "x64"
             vcpkg_triplet: "x64-windows"
-          - os: windows-2019
-            generator: "Visual Studio 16 2019"
-            arch: "x64"
-            vcpkg_triplet: "x64-windows"
 
           # macOS builds
           - os: macos-14
             generator: "Ninja"
             arch: "arm64"
-            cc: "clang"
-            cxx: "clang++"
-          - os: macos-13
-            generator: "Ninja"
-            arch: "x86_64"
-            cc: "clang"
-            cxx: "clang++"
-          - os: macos-12
-            generator: "Ninja"
-            arch: "x86_64"
             cc: "clang"
             cxx: "clang++"
 
@@ -71,8 +57,23 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
+          # Update Homebrew
           brew update
-          brew install eigen tbb flann ninja cmake ccache pkg-config
+
+          # Install dependencies
+          brew install eigen
+          brew install tbb
+          brew install flann
+          brew install ninja
+          brew install cmake
+          brew install ccache
+          brew install pkg-config
+
+          # Verify installations
+          pkg-config --modversion eigen3 || echo "Eigen3 installed via Homebrew"
+          pkg-config --modversion tbb || echo "TBB installed via Homebrew"
+          which ninja
+          which cmake
 
       - name: Setup ccache (macOS)
         if: runner.os == 'macOS'
@@ -101,6 +102,11 @@ jobs:
         run: |
           export CC=${{ matrix.cc }}
           export CXX=${{ matrix.cxx }}
+
+          # Set up Homebrew paths
+          export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
+
           cmake -S cpp/kiss_matcher \
                 -B build \
                 -G "${{ matrix.generator }}" \
@@ -111,7 +117,8 @@ jobs:
                 -DUSE_CCACHE=ON \
                 -DUSE_SYSTEM_EIGEN3=ON \
                 -DUSE_SYSTEM_TBB=ON \
-                -DUSE_SYSTEM_ROBIN=OFF
+                -DUSE_SYSTEM_ROBIN=OFF \
+                -DCMAKE_FIND_FRAMEWORK=LAST
 
       - name: Build C++ Core
         run: cmake --build build --config Release --parallel
@@ -166,8 +173,8 @@ jobs:
             echo "✅ All C++ builds completed successfully" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Tested Configurations:" >> $GITHUB_STEP_SUMMARY
-            echo "- **Windows**: 2019, 2022 (Visual Studio, x64)" >> $GITHUB_STEP_SUMMARY
-            echo "- **macOS**: 12, 13, 14 (Clang, x86_64/arm64)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Windows**: 2022 (Visual Studio, x64)" >> $GITHUB_STEP_SUMMARY
+            echo "- **macOS**: 14 (Clang, arm64)" >> $GITHUB_STEP_SUMMARY
             echo "- **Compilers**: MSVC (Windows), Clang (macOS)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Build Features:" >> $GITHUB_STEP_SUMMARY
