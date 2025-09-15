@@ -128,24 +128,20 @@ jobs:
       - name: Build and install Python package
         if: matrix.build-type == 'Python'
         run: |
-          # Use system clang to match Python's C++ stdlib (critical for symbol compatibility)
+          # Use system clang and disable OpenMP to avoid linking issues
           export CC=clang
           export CXX=clang++
 
-          # Explicitly use system libc++ (same as Python framework)
-          export CXXFLAGS="-stdlib=libc++ $CXXFLAGS"
-          export LDFLAGS="-stdlib=libc++ -L/opt/homebrew/lib $LDFLAGS"
-
-          # Set up Homebrew paths
+          # Set up Homebrew paths for other dependencies
           export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
+          export LDFLAGS="-L/opt/homebrew/lib $LDFLAGS"
           export CPPFLAGS="-I/opt/homebrew/include $CPPFLAGS"
 
-          # Configure OpenMP for system clang with Homebrew libomp
-          export OpenMP_ROOT="/opt/homebrew"
-          export CMAKE_ARGS="-DUSE_SYSTEM_EIGEN3=ON -DUSE_SYSTEM_TBB=ON -DUSE_SYSTEM_ROBIN=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_FIND_FRAMEWORK=LAST -DOpenMP_ROOT=/opt/homebrew -DOpenMP_CXX_FLAGS='-Xpreprocessor -fopenmp' -DOpenMP_CXX_LIB_NAMES=omp -DOpenMP_omp_LIBRARY=/opt/homebrew/lib/libomp.dylib"
+          # Disable OpenMP completely for Python builds to avoid symbol conflicts
+          export CMAKE_ARGS="-DUSE_SYSTEM_EIGEN3=ON -DUSE_SYSTEM_TBB=ON -DUSE_SYSTEM_ROBIN=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_FIND_FRAMEWORK=LAST -DCMAKE_DISABLE_FIND_PACKAGE_OpenMP=ON"
 
-          echo "Building Python package with Python ${{ matrix.python-version }} on macOS using system clang"
+          echo "Building Python package with Python ${{ matrix.python-version }} on macOS (OpenMP disabled)"
           python -m pip install -e python/ --verbose
 
       - name: Install runtime dependencies

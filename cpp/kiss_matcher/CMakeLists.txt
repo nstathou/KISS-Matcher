@@ -78,8 +78,11 @@ if (OPENMP_FOUND) #The best way to set proper compiler settings for using OpenMP
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+    set(OpenMP_LIBS ${OpenMP_CXX_LIBRARIES})
+    message(STATUS "OpenMP found and enabled")
 else (OPENMP_FOUND)
-    message("ERROR: OpenMP could not be found.")
+    message(STATUS "OpenMP not found or disabled - building without OpenMP")
+    set(OpenMP_LIBS "")
 endif (OPENMP_FOUND)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall ${CMAKE_CXX_FLAGS}")
 
