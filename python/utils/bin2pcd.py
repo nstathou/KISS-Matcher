@@ -2,7 +2,7 @@ import struct
 import sys
 
 import numpy as np
-import open3d as o3d
+from kiss_matcher.io_utils import write_pcd
 
 
 def bin_to_pcd(bin_file_name):
@@ -14,15 +14,12 @@ def bin_to_pcd(bin_file_name):
             x, y, z, _ = struct.unpack("ffff", byte)
             list_pcd.append([x, y, z])
             byte = file.read(size_float * 4)
-    np_pcd = np.asarray(list_pcd)
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np_pcd)
-    return pcd
+    return np.asarray(list_pcd)
 
 
 def main(binFileName, pcd_file_name):
-    pcd = bin_to_pcd(binFileName)
-    o3d.io.write_point_cloud(pcd_file_name, pcd)
+    points = bin_to_pcd(binFileName)
+    write_pcd(points, pcd_file_name)
 
 
 if __name__ == "__main__":

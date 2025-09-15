@@ -2,19 +2,8 @@ import argparse
 
 import kiss_matcher
 import numpy as np
-import open3d as o3d  # Only for the load of pcd and visualization
-
-
-# KITTI type bin file
-def read_bin(bin_path):
-    scan = np.fromfile(bin_path, dtype=np.float32)
-    scan = scan.reshape((-1, 4))
-    return scan[:, :3]
-
-
-def read_pcd(pcd_path):
-    pcd = o3d.io.read_point_cloud(pcd_path)
-    return np.asarray(pcd.points)
+import viser
+from kiss_matcher.io_utils import read_bin, read_pcd, read_ply
 
 
 def remove_nan_from_point_cloud(point_cloud):
@@ -44,13 +33,13 @@ if __name__ == "__main__":
         "--src_path",
         type=str,
         required=True,
-        help="Source point cloud file (.bin or .pcd)",
+        help="Source point cloud file (.bin, .pcd, or .ply)",
     )
     parser.add_argument(
         "--tgt_path",
         type=str,
         required=True,
-        help="Target point cloud file (.bin or .pcd)",
+        help="Target point cloud file (.bin, .pcd, or .ply)",
     )
     parser.add_argument(
         "--resolution",
@@ -72,8 +61,10 @@ if __name__ == "__main__":
         src = read_bin(args.src_path)
     elif args.src_path.endswith(".pcd"):
         src = read_pcd(args.src_path)
+    elif args.src_path.endswith(".ply"):
+        src = read_ply(args.src_path)
     else:
-        raise ValueError("Unsupported file format for src. Use .bin or .pcd")
+        raise ValueError("Unsupported file format for src. Use .bin, .pcd, or .ply")
 
     # Apply yaw augmentation if provided
     if args.yaw_aug_angle is not None:
@@ -84,8 +75,10 @@ if __name__ == "__main__":
         tgt = read_bin(args.tgt_path)
     elif args.tgt_path.endswith(".pcd"):
         tgt = read_pcd(args.tgt_path)
+    elif args.tgt_path.endswith(".ply"):
+        tgt = read_ply(args.tgt_path)
     else:
-        raise ValueError("Unsupported file format for tgt. Use .bin or .pcd")
+        raise ValueError("Unsupported file format for tgt. Use .bin, .pcd, or .ply")
 
     # Remove NaN values from the point cloud.
     # See https://github.com/MIT-SPARK/KISS-Matcher/pull/16
@@ -115,47 +108,51 @@ if __name__ == "__main__":
         print("\033[1;32m=> Registration likely succeeded XD\033[0m\n")
 
     # ------------------------------------------------------------
-    # Visualization
+    # Visualization with Viser
     # ------------------------------------------------------------
     # Apply transformation to src
     rotation_matrix = np.array(result.rotation)
     translation_vector = np.array(result.translation)
     transformed_src = (rotation_matrix @ src.T).T + translation_vector
 
-    # Create Open3D point clouds
-    src_o3d = o3d.geometry.PointCloud()
-    src_o3d.points = o3d.utility.Vector3dVector(src)
-    src_o3d.colors = o3d.utility.Vector3dVector(
-        np.array([[0.78, 0.78, 0.78] for _ in range(src.shape[0])]))  # Gray
+    # Create Viser server for visualization
+    server = viser.ViserServer()
+    print("Viser server started. Open the web interface to view the point clouds.")
+    print("Server URL: http://localhost:8080")
 
-    tgt_o3d = o3d.geometry.PointCloud()
-    tgt_o3d.points = o3d.utility.Vector3dVector(tgt)
-    tgt_o3d.colors = o3d.utility.Vector3dVector(
-        np.array([[0.35, 0.65, 0.90] for _ in range(tgt.shape[0])]))  # Cyan
+    # Add point clouds to viser
+    server.scene.add_point_cloud(
+        "/source_cloud",
+        points=src.astype(np.float32),
+        colors=np.array([[200, 200, 200] for _ in range(src.shape[0])], dtype=np.uint8),  # Gray
+        point_size=0.003,
+    )
 
-    transformed_src_o3d = o3d.geometry.PointCloud()
-    transformed_src_o3d.points = o3d.utility.Vector3dVector(transformed_src)
-    transformed_src_o3d.colors = o3d.utility.Vector3dVector(
-        np.array([[1.0, 0.63, 0.00]
-                  for _ in range(transformed_src.shape[0])]))  # Orange
+    server.scene.add_point_cloud(
+        "/target_cloud",
+        points=tgt.astype(np.float32),
+        colors=np.array([[90, 165, 230] for _ in range(tgt.shape[0])], dtype=np.uint8),  # Cyan
+        point_size=0.003,
+    )
 
-    # visualization
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="KISS-Matcher Viz",
-                      width=1600,
-                      height=1200,
-                      left=300,
-                      top=300)
-    vis.get_render_option().point_size = 0.3
-    vis.get_render_option().background_color = np.array([0, 0, 0
-                                                         ])  # Black background
-    vis.get_render_option().light_on = True
+    server.scene.add_point_cloud(
+        "/transformed_source",
+        points=transformed_src.astype(np.float32),
+        colors=np.array([[255, 160, 0] for _ in range(transformed_src.shape[0])], dtype=np.uint8),  # Orange
+        point_size=0.003,
+    )
 
-    vis.add_geometry(src_o3d)
-    vis.add_geometry(tgt_o3d)
-    vis.add_geometry(transformed_src_o3d)
+    print("Point clouds added to visualization:")
+    print("- Gray: Original source cloud")
+    print("- Cyan: Target cloud")
+    print("- Orange: Transformed source cloud")
+    print("\nPress Ctrl+C to exit...")
 
-    vis.run()
-    vis.destroy_window()
-
-    print("Visualization complete.")
+    try:
+        # Keep server running
+        while True:
+            import time
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\nVisualization stopped.")
+        server.stop()

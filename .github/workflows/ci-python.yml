@@ -85,7 +85,7 @@ jobs:
 
       - name: Install runtime dependencies
         run: |
-          python -m pip install open3d
+          python -m pip install viser
 
       - name: Test Python import and basic functionality
         run: |

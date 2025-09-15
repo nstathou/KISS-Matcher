@@ -33,7 +33,7 @@ classifiers = [
 
 dependencies = [
   "numpy",
-  "open3d",
+  "viser",
 ]
 
 [tool.scikit-build]
