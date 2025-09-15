@@ -44,9 +44,9 @@ class TestKISSMatcher(unittest.TestCase):
             # Create a matcher
             matcher = km.KISSMatcher(0.3)
 
-            # Create simple point clouds (3x3 arrays for testing)
-            src_points = np.random.rand(10, 3).astype(np.float32)
-            tgt_points = np.random.rand(10, 3).astype(np.float32)
+            # Create larger point clouds for better matching
+            src_points = np.random.rand(100, 3).astype(np.float32)
+            tgt_points = src_points.copy()  # Use same points for target
 
             # Convert to vector format if needed
             src_vector = [src_points[i] for i in range(src_points.shape[0])]
