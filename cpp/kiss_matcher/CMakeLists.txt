@@ -73,17 +73,17 @@ endif()
 message(STATUS "LZ4 found: ${LZ4_FOUND}")
 message(STATUS "LZ4 libraries: ${LZ4_LIBRARIES}")
 
-include(FindOpenMP) #The best way to set proper compiler settings for using OpenMP in all platforms
-if (OPENMP_FOUND) #The best way to set proper compiler settings for using OpenMP in all platforms
+find_package(OpenMP QUIET) #Make OpenMP optional, don't error if not found
+if (OpenMP_FOUND) #The best way to set proper compiler settings for using OpenMP in all platforms
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
     set(OpenMP_LIBS ${OpenMP_CXX_LIBRARIES})
     message(STATUS "OpenMP found and enabled")
-else (OPENMP_FOUND)
+else (OpenMP_FOUND)
     message(STATUS "OpenMP not found or disabled - building without OpenMP")
     set(OpenMP_LIBS "")
-endif (OPENMP_FOUND)
+endif (OpenMP_FOUND)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall ${CMAKE_CXX_FLAGS}")
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/core)
