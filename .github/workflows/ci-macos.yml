@@ -128,7 +128,21 @@ jobs:
       - name: Build and install Python package
         if: matrix.build-type == 'Python'
         run: |
-          echo "Building Python package with Python ${{ matrix.python-version }} on macOS"
+          echo "=== Debugging Environment ==="
+          echo "Python: $(which python)"
+          echo "Python version: $(python --version)"
+          echo "CC: ${CC:-not set}"
+          echo "CXX: ${CXX:-not set}"
+          echo "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH:-not set}"
+          echo "PKG_CONFIG_PATH: ${PKG_CONFIG_PATH:-not set}"
+
+          echo "=== Checking Dependencies ==="
+          pkg-config --exists eigen3 && echo "✅ eigen3 found" || echo "❌ eigen3 not found"
+          pkg-config --exists tbb && echo "✅ tbb found" || echo "❌ tbb not found"
+          pkg-config --exists liblz4 && echo "✅ liblz4 found" || echo "❌ liblz4 not found"
+          ls -la /opt/homebrew/lib/liblz4* 2>/dev/null || echo "No LZ4 in /opt/homebrew/lib"
+
+          echo "=== Building Python package ==="
           python -m pip install -e python/ --verbose
 
       - name: Install runtime dependencies
