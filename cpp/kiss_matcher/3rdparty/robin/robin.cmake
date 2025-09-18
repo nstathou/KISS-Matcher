@@ -25,12 +25,13 @@
 option(PMC_BUILD_SHARED "Build pmc as a shared library (.so)" OFF)
 
 include(FetchContent)
-# Use git master branch instead of tagged version for latest CMake fixes
-FetchContent_Declare(robin
-    GIT_REPOSITORY https://github.com/MIT-SPARK/ROBIN.git
-    GIT_TAG master
-)
+# Use tagged version and disable PMC to avoid CMake compatibility issues
+FetchContent_Declare(robin URL https://github.com/MIT-SPARK/ROBIN/archive/refs/tags/v.1.2.4.tar.gz)
 FetchContent_GetProperties(robin)
+
+# Disable PMC tests/examples to avoid CMake compatibility issues
+set(SKIP_TESTS ON CACHE BOOL "Skip building PMC tests" FORCE)
+set(SKIP_EXAMPLES ON CACHE BOOL "Skip building PMC examples" FORCE)
 
 # Prefer FetchContent_MakeAvailable when available (CMake 3.14+)
 if(COMMAND FetchContent_MakeAvailable)
