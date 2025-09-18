@@ -142,6 +142,15 @@ jobs:
           pkg-config --exists liblz4 && echo "✅ liblz4 found" || echo "❌ liblz4 not found"
           ls -la /opt/homebrew/lib/liblz4* 2>/dev/null || echo "No LZ4 in /opt/homebrew/lib"
 
+          echo "=== Setting up compiler environment for OpenMP ==="
+          # Use LLVM clang for OpenMP support (same as C++ build)
+          export CC=/opt/homebrew/opt/llvm/bin/clang
+          export CXX=/opt/homebrew/opt/llvm/bin/clang++
+
+          # Set up Homebrew paths
+          export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
+
           echo "=== Building Python package ==="
           python -m pip install -e python/ --verbose
 
