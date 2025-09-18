@@ -25,10 +25,10 @@
 option(PMC_BUILD_SHARED "Build pmc as a shared library (.so)" OFF)
 
 include(FetchContent)
-# Use git main branch instead of tagged version for latest CMake fixes
+# Use git master branch instead of tagged version for latest CMake fixes
 FetchContent_Declare(robin
     GIT_REPOSITORY https://github.com/MIT-SPARK/ROBIN.git
-    GIT_TAG main
+    GIT_TAG master
 )
 FetchContent_GetProperties(robin)
 
