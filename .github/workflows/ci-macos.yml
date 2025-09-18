@@ -56,6 +56,9 @@ jobs:
           brew install lz4
           brew install libomp
 
+          # ROBIN has CMake compatibility issues, force disable system ROBIN
+          echo "⚠️  Disabling system ROBIN due to CMake compatibility issues"
+
           # Verify installations
           pkg-config --modversion eigen3 || echo "Eigen3 installed via Homebrew"
           pkg-config --modversion tbb || echo "TBB installed via Homebrew"
@@ -93,7 +96,8 @@ jobs:
                 -DUSE_SYSTEM_EIGEN3=ON \
                 -DUSE_SYSTEM_TBB=ON \
                 -DUSE_SYSTEM_ROBIN=OFF \
-                -DCMAKE_FIND_FRAMEWORK=LAST
+                -DCMAKE_FIND_FRAMEWORK=LAST \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build C++ Core
         if: matrix.build-type == 'C++'
@@ -150,6 +154,9 @@ jobs:
           # Set up Homebrew paths
           export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
           export CMAKE_PREFIX_PATH="/opt/homebrew:/usr/local:$CMAKE_PREFIX_PATH"
+
+          # Force disable system ROBIN and set CMake policy to handle compatibility
+          export CMAKE_ARGS="-DUSE_SYSTEM_ROBIN=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
           echo "=== Building Python package ==="
           python -m pip install -e python/ --verbose
