@@ -25,7 +25,11 @@
 option(PMC_BUILD_SHARED "Build pmc as a shared library (.so)" OFF)
 
 include(FetchContent)
-FetchContent_Declare(robin URL https://github.com/MIT-SPARK/ROBIN/archive/refs/tags/v.1.2.4.tar.gz)
+# Use git main branch instead of tagged version for latest CMake fixes
+FetchContent_Declare(robin
+    GIT_REPOSITORY https://github.com/MIT-SPARK/ROBIN.git
+    GIT_TAG main
+)
 FetchContent_GetProperties(robin)
 
 # Prefer FetchContent_MakeAvailable when available (CMake 3.14+)
