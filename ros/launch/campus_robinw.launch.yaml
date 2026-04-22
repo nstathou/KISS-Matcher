@@ -10,7 +10,7 @@ launch:
 
   - arg: {name: map_frame , default: 'map' , description: "Global (loop-closure corrected) frame"}
   - arg: {name: odom_frame, default: 'odom', description: "Fast-LIO odometry frame (child of map)"}
-  - arg: {name: base_frame, default: 'seyond', description: "Robot's base frame (kept for compatibility)"}
+  - arg: {name: base_frame, default: 'vectornav', description: "Robot's base frame (kept for compatibility)"}
 
   - arg: {name: odom_topic, default: "/fast_lio/odometry"}
   - arg: {name: scan_topic, default: "/fast_lio/cloud_registered_lidar"}

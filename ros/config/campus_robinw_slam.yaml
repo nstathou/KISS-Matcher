@@ -20,7 +20,7 @@
                                      # (e.g. raw driver output). Default false assumes the scan is
                                      # already in the odom frame (e.g. fast_lio/cloud_registered).
     voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
-    map_voxel_resolution: 0.4        # Resolution used when building map. Only for visualization
+    map_voxel_resolution: 0.5        # Resolution used when building map. Only for visualization
     save_voxel_resolution: 0.4       # Resolution used when saving voxelized map
 
     keyframe:
@@ -65,28 +65,28 @@
       num_inliers_threshold: 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, bootstrap into a previously saved session at startup
-      prior_map_pcd: ""  # Visualization only (published on /prior_map). Leave empty to skip.
+      enabled: true                    # If true, bootstrap into a previously saved session at startup
+      prior_map_pcd: "/home/niksta/Documents/datasets/campus_ouster/campus_ouster_map.pcd"  # Visualization only (published on /prior_map). Leave empty to skip.
       # Prior session dir is required when reloc is enabled. The directory must
       # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
       # result.save_pose_graph). Prior keyframes become real nodes in the ISAM2
       # graph; the bootstrap step below runs radius-based inter-session loop
       # closure against them to place new-session odometry into the prior frame.
-      prior_session_dir: ""
+      prior_session_dir: "/home/niksta/Documents/datasets/campus_ouster"
       prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
       new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
       # --- Radius-based bootstrap reloc. Assumes the new session starts close
       # to the prior session's start pose; the current scan is matched against
       # prior keyframes within `bootstrap_radius` using KISS-Matcher + VGICP.
-      bootstrap_radius: 50.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
+      bootstrap_radius: 25.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
                                           # Must exceed the expected initial-alignment error.
       bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
                                           # only after this much motion.
-      bootstrap_submap_scans: 20           # Size of the query-side ring buffer. Scans are matched
+      bootstrap_submap_scans: 10           # Size of the query-side ring buffer. Scans are matched
                                           # submap-to-submap against prior_keyframes_ (which
                                           # contributes num_submap_keyframes on the target side).
       bootstrap_max_attempts_per_tick: 5  # Prior candidates tried per invocation.
-      bootstrap_voxel_resolution: 0.25     # [Unit: m] Pre-voxelize resolution applied to BOTH
+      bootstrap_voxel_resolution: 0.5     # [Unit: m] Pre-voxelize resolution applied to BOTH
                                           # src and tgt submaps during bootstrap reloc only.
                                           # Set <= 0 to reuse the global `voxel_resolution`.
                                           # Use a smaller value than the global setting to give
@@ -107,11 +107,11 @@
                         0.0, 0.0, 1.0,  0.0,
                         0.0, 0.0, 0.0,  1.0]
     result:
-      save_map_pcd: true
+      save_map_pcd: false
       save_map_bag: false                 # not implemented yet
-      save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
-      save_pose_graph: true               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
-      seq_name: "campus_robinw"
+      save_in_kitti_format: false          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
+      save_pose_graph: false               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
+      seq_name: "campus_robinw_re"
       save_dir: "/home/niksta/Documents/datasets"                          # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the

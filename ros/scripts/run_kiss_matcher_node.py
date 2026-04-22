@@ -62,8 +62,8 @@ class KissMatcherNode(Node):
     def __init__(self):
         super().__init__("run_kiss_matcher")
 
-        self.declare_parameter("src_path", "")
-        self.declare_parameter("tgt_path", "")
+        self.declare_parameter("src_path", "/home/niksta/Documents/datasets/campus_ouster/campus_ouster_map.pcd")
+        self.declare_parameter("tgt_path", "/home/niksta/Documents/datasets/campus_robinw/campus_robinw_map.pcd")
         self.declare_parameter("resolution", 0.1)
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("source_frame", "source")
