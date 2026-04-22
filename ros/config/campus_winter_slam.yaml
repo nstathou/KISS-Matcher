@@ -70,22 +70,19 @@
       # Prior session dir is required when reloc is enabled. The directory must
       # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
       # result.save_pose_graph). Prior keyframes become real nodes in the ISAM2
-      # graph; the bootstrap step below runs radius-based inter-session loop
-      # closure against them to place new-session odometry into the prior frame.
+      # graph; the bootstrap step below runs a submap-to-submap match against
+      # the prior session's starting region to place new-session odometry into
+      # the prior frame.
       prior_session_dir: ""
       prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
       new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
-      # --- Radius-based bootstrap reloc. Assumes the new session starts close
-      # to the prior session's start pose; the current scan is matched against
-      # prior keyframes within `bootstrap_radius` using KISS-Matcher + VGICP.
-      bootstrap_radius: 15.0              # [Unit: m] Radius for prior-keyframe search during bootstrap.
-                                          # Must exceed the expected initial-alignment error.
+      # --- Submap-to-submap bootstrap reloc. Assumes the new session starts
+      # near the prior session's start pose. We collect `num_submap_keyframes`
+      # scans into a ring buffer on the new-session side and match them against
+      # the first `num_submap_keyframes` prior-session keyframes (KISS-Matcher
+      # + VGICP). On failure, the ring slides by one and we retry.
       bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
                                           # only after this much motion.
-      bootstrap_submap_scans: 5           # Size of the query-side ring buffer. Scans are matched
-                                          # submap-to-submap against prior_keyframes_ (which
-                                          # contributes num_submap_keyframes on the target side).
-      bootstrap_max_attempts_per_tick: 5  # Prior candidates tried per invocation.
       bootstrap_voxel_resolution: -1.0    # [Unit: m] Pre-voxelize resolution applied to BOTH
                                           # src and tgt submaps during bootstrap reloc only.
                                           # <= 0 reuses the global `voxel_resolution`.

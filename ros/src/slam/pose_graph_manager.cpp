@@ -35,6 +35,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   save_voxel_res_                  = declare_parameter<double>("save_voxel_resolution", 0.3);
   keyframe_thr_                    = declare_parameter<double>("keyframe.keyframe_threshold", 1.0);
   lc_config.num_submap_keyframes_  = declare_parameter<int>("keyframe.num_submap_keyframes", 5);
+  num_submap_keyframes_            = static_cast<size_t>(lc_config.num_submap_keyframes_);
   lc_config.verbose_               = declare_parameter<bool>("loop.verbose", false);
   lc_config.is_multilayer_env_     = declare_parameter<bool>("loop.is_multilayer_env", false);
   lc_config.loop_detection_radius_ = declare_parameter<double>("loop.loop_detection_radius", 15.0);
@@ -54,14 +55,8 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
 
   reloc_enabled_ = declare_parameter<bool>("relocalization.enabled", false);
   prior_map_pcd_path_ = declare_parameter<std::string>("relocalization.prior_map_pcd", "");
-  bootstrap_radius_ =
-      declare_parameter<double>("relocalization.bootstrap_radius", 15.0);
   bootstrap_scan_distance_ =
       declare_parameter<double>("relocalization.bootstrap_scan_distance", 0.5);
-  bootstrap_submap_scans_ = static_cast<size_t>(
-      declare_parameter<int>("relocalization.bootstrap_submap_scans", 5));
-  bootstrap_max_attempts_per_tick_ = static_cast<size_t>(
-      declare_parameter<int>("relocalization.bootstrap_max_attempts_per_tick", 5));
   bootstrap_voxel_resolution_ = declare_parameter<double>(
       "relocalization.bootstrap_voxel_resolution", -1.0);
   bootstrap_num_inliers_threshold_ = declare_parameter<int>(
@@ -276,11 +271,10 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
                                           std::bind(&PoseGraphManager::performRegistration, this));
 
   if (!prior_keyframes_.empty()) {
-    // Detect cross-session candidates at the same cadence as intra-session NN
-    // search; run registrations on a faster timer so we don't bottleneck.
-    inter_lc_detect_timer_ = this->create_wall_timer(
-        std::chrono::duration<double>(1.0 / loop_nnsearch_hz),
-        std::bind(&PoseGraphManager::detectInterSessionLoopClosure, this));
+    // Inter-session candidate detection is now triggered per new keyframe
+    // inside `callbackNode()` (see `detectInterSessionLoopClosure`), so there
+    // is no standalone detection timer. The registration worker stays on its
+    // own timer so a slow KISS-Matcher pass cannot stall the sync callback.
     inter_lc_reg_timer_ = this->create_wall_timer(
         std::chrono::duration<double>(1.0 / 100.0),
         std::bind(&PoseGraphManager::performInterSessionRegistration, this));
@@ -399,6 +393,14 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
     ++latest_keyframe_idx;
     is_initialized_ = true;
 
+    // Commit the bootstrap reloc result as a single cross-prefix BetweenFactor
+    // so ISAM2 jointly optimizes the prior and new sessions from the very
+    // first keyframe. Queued here; the next keyframe's update flushes it.
+    commitBootstrapAnchor(latest_keyframe_idx - 1);
+    // Enqueue inter-session NN candidates for this keyframe (dedup-aware, one
+    // shot per keyframe).
+    detectInterSessionLoopClosure();
+
     RCLCPP_INFO(this->get_logger(), "The first node comes. Initialization complete.");
 
   } else {
@@ -432,6 +434,13 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
         std::lock_guard<std::mutex> lock(vis_mutex_);
         appendKeyframePose(current_frame_);
       }
+
+      // Commit a pending bootstrap anchor (if `tryRelocalize()` just
+      // succeeded) and enqueue inter-session NN candidates for this new
+      // keyframe. Both happen exactly once per keyframe; the dedup set
+      // prevents re-enqueueing candidates already being processed.
+      commitBootstrapAnchor(latest_keyframe_idx - 1);
+      detectInterSessionLoopClosure();
 
       local_timer.tic();
       {
@@ -644,10 +653,65 @@ void PoseGraphManager::performRegistration() {
   RCLCPP_INFO(this->get_logger(), "Reg: %.1f msec", reg_timer.toc());
 }
 
+void PoseGraphManager::commitBootstrapAnchor(size_t new_session_kf_idx) {
+  if (!pending_bootstrap_anchor_) return;
+  if (prior_keyframes_.empty()) {
+    pending_bootstrap_anchor_ = false;
+    return;
+  }
+  if (pending_bootstrap_match_idx_ >= prior_keyframes_.size()) {
+    RCLCPP_WARN(this->get_logger(),
+                "Bootstrap anchor skipped: match idx %lu out of range (prior "
+                "has %lu keyframes).",
+                pending_bootstrap_match_idx_,
+                prior_keyframes_.size());
+    pending_bootstrap_anchor_ = false;
+    return;
+  }
+
+  // The new keyframe's pose_corrected_ was already rewritten into the prior
+  // map frame via T_priormap_from_newodom_ (callbackNode). The BetweenFactor
+  // encodes the observed relative offset to the matched prior keyframe, so
+  // ISAM2 can jointly optimize both sub-graphs going forward.
+  const gtsam::Pose3 pose_from = eigenToGtsam(keyframes_.back().pose_corrected_);
+  const gtsam::Pose3 pose_to =
+      eigenToGtsam(prior_keyframes_[pending_bootstrap_match_idx_].pose_corrected_);
+
+  auto variance_vector =
+      (gtsam::Vector(6) << 1e-4, 1e-4, 1e-4, 1e-2, 1e-2, 1e-2).finished();
+  gtsam::noiseModel::Diagonal::shared_ptr anchor_noise =
+      gtsam::noiseModel::Diagonal::Variances(variance_vector);
+
+  {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    const gtsam::Symbol sym_q(new_session_prefix_, new_session_kf_idx);
+    const gtsam::Symbol sym_m(prior_session_prefix_, pending_bootstrap_match_idx_);
+    gtsam::BetweenFactor<gtsam::Pose3> anchor(
+        sym_q, sym_m, pose_from.between(pose_to), anchor_noise);
+    gtsam_graph_.add(anchor);
+    persistent_graph_.add(anchor);
+  }
+
+  vis_inter_loop_edges_.emplace_back(new_session_kf_idx, pending_bootstrap_match_idx_);
+  loop_closure_added_       = true;
+  need_map_update_          = true;
+  need_graph_vis_update_    = true;
+  need_lc_cloud_vis_update_ = true;
+  pending_bootstrap_anchor_ = false;
+
+  RCLCPP_INFO(this->get_logger(),
+              "\033[1;32mBootstrap anchor committed: b%lu <-> %c%lu.\033[0m",
+              new_session_kf_idx,
+              prior_session_prefix_,
+              pending_bootstrap_match_idx_);
+}
+
 void PoseGraphManager::detectInterSessionLoopClosure() {
-  // Only meaningful once the bootstrap reloc has placed new-session poses in
-  // the prior-map frame; before that, radius queries against prior_keyframes_
-  // would be nonsense.
+  // Called from `callbackNode()` exactly once per new-session keyframe.
+  // Populates `inter_loop_idx_pair_queue_` with NN candidates from
+  // `prior_keyframes_` for the latest keyframe. The dedup set ensures the
+  // same (query, match) pair is never enqueued twice, so the registration
+  // worker naturally quiesces when the rosbag stops.
   if (!reloc_succeeded_ || prior_keyframes_.empty()) {
     return;
   }
@@ -659,7 +723,11 @@ void PoseGraphManager::detectInterSessionLoopClosure() {
   const auto idx_pairs =
       loop_closure_->fetchInterSessionLoopCandidates(query, prior_keyframes_);
   for (const auto &pair : idx_pairs) {
-    inter_loop_idx_pair_queue_.push(pair);
+    const uint64_t key = (static_cast<uint64_t>(pair.first) << 32) |
+                         static_cast<uint32_t>(pair.second);
+    if (enqueued_inter_pairs_.insert(key).second) {
+      inter_loop_idx_pair_queue_.push(pair);
+    }
   }
 }
 
@@ -1038,6 +1106,16 @@ bool PoseGraphManager::tryRelocalize() {
                           "(prior_keyframes_ is empty).");
     return false;
   }
+  if (prior_keyframes_.size() < num_submap_keyframes_) {
+    RCLCPP_ERROR_THROTTLE(this->get_logger(),
+                          *this->get_clock(),
+                          5000,
+                          "Prior session has only %lu keyframes (need at least "
+                          "num_submap_keyframes=%lu for bootstrap).",
+                          prior_keyframes_.size(),
+                          num_submap_keyframes_);
+    return false;
+  }
 
   // Throttle by motion: only push a new scan into the query-side buffer once
   // per `bootstrap_scan_distance_` of movement so buffered scans are spatially
@@ -1053,94 +1131,81 @@ bool PoseGraphManager::tryRelocalize() {
 
   // Push current scan into the query-side ring buffer. pose_corrected_ is
   // the new-odom pose pre-multiplied by `bootstrap_T_init_` so the query
-  // lives in (an approximation of) the prior-map frame. Radius filtering +
-  // KISS-Matcher absorb the remaining residual misalignment.
+  // lives in (an approximation of) the prior-map frame. KISS-Matcher absorbs
+  // the remaining residual misalignment.
   PoseGraphNode buffered   = current_frame_;
   buffered.pose_corrected_ = bootstrap_T_init_ * current_frame_.pose_;
   reloc_scan_buffer_.push_back(std::move(buffered));
-  while (reloc_scan_buffer_.size() > bootstrap_submap_scans_) {
+  while (reloc_scan_buffer_.size() > num_submap_keyframes_) {
     reloc_scan_buffer_.pop_front();
   }
 
-  // Copy the deque into a contiguous vector for performInterSessionLoopClosure.
-  // The last element is the "center" of the query submap (all preceding
-  // scans are folded in by accumulateSubmap's start = center - submap_range).
-  const std::vector<PoseGraphNode> query_vec(reloc_scan_buffer_.begin(),
-                                             reloc_scan_buffer_.end());
-  const size_t query_center_idx = query_vec.size() - 1;
-  const PoseGraphNode &query    = query_vec[query_center_idx];
-
-  const auto candidates = loop_closure_->fetchInterSessionLoopCandidates(
-      query, prior_keyframes_, bootstrap_max_attempts_per_tick_, bootstrap_radius_);
-
-  if (candidates.empty()) {
-    RCLCPP_INFO_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        2000,
-        "Bootstrap reloc: no prior keyframes within %.1fm of current pose. "
-        "Waiting for motion.",
-        bootstrap_radius_);
+  // Wait until the query ring buffer is full. Matching a partial buffer
+  // against a full N-keyframe prior submap wastes registration attempts.
+  if (reloc_scan_buffer_.size() < num_submap_keyframes_) {
+    RCLCPP_INFO_THROTTLE(this->get_logger(),
+                         *this->get_clock(),
+                         2000,
+                         "Bootstrap reloc: accumulating scans (%lu/%lu).",
+                         reloc_scan_buffer_.size(),
+                         num_submap_keyframes_);
     return false;
   }
 
-  const Eigen::Vector3d qpos = query.pose_corrected_.block<3, 1>(0, 3);
+  // Submap-to-submap match: the first `num_submap_keyframes_` prior keyframes
+  // form the target. Center both submaps at the middle index so
+  // `accumulateSubmap` (which uses center ± submap_range) sweeps over the
+  // whole buffer on each side.
+  const std::vector<PoseGraphNode> query_vec(reloc_scan_buffer_.begin(),
+                                             reloc_scan_buffer_.end());
+  const size_t center_idx = num_submap_keyframes_ / 2;
+
+  const Eigen::Vector3d qpos = query_vec[center_idx].pose_corrected_.block<3, 1>(0, 3);
+  const Eigen::Vector3d ppos = prior_keyframes_[center_idx].pose_corrected_.block<3, 1>(0, 3);
   RCLCPP_INFO(this->get_logger(),
-              "Bootstrap reloc: query @ (%.2f, %.2f, %.2f), buffer=%lu, "
-              "trying %lu candidates within %.1fm:",
-              qpos.x(), qpos.y(), qpos.z(),
-              query_vec.size(),
-              candidates.size(),
-              bootstrap_radius_);
-  for (const auto &pair : candidates) {
-    const size_t m             = pair.second;
-    const Eigen::Vector3d ppos = prior_keyframes_[m].pose_corrected_.block<3, 1>(0, 3);
-    const double dxy           = (ppos.head<2>() - qpos.head<2>()).norm();
-    RCLCPP_INFO(this->get_logger(),
-                "  prior[%lu] @ (%.2f, %.2f, %.2f)  dXY=%.2fm",
-                m, ppos.x(), ppos.y(), ppos.z(), dxy);
-  }
+              "Bootstrap reloc: matching query submap @ (%.2f, %.2f, %.2f) "
+              "against prior starting submap @ (%.2f, %.2f, %.2f).",
+              qpos.x(), qpos.y(), qpos.z(), ppos.x(), ppos.y(), ppos.z());
 
-  for (const auto &pair : candidates) {
-    const size_t match_idx = pair.second;
-    const RegOutput reg    = loop_closure_->performInterSessionLoopClosure(
-        query_vec, prior_keyframes_, query_center_idx, match_idx,
-        bootstrap_voxel_resolution_,
-        bootstrap_num_inliers_threshold_);
+  const RegOutput reg = loop_closure_->performInterSessionLoopClosure(
+      query_vec, prior_keyframes_, center_idx, center_idx,
+      bootstrap_voxel_resolution_,
+      bootstrap_num_inliers_threshold_);
 
-    // Publish the submaps KISS-Matcher was actually fed, so we can see them in
-    // RViz even when bootstrap is failing (the normal /lc/* pubs only fire on
-    // successful LCs). Frame is the prior-map frame since each scan was already
-    // transformed by its pose_corrected_ inside performInterSessionLoopClosure.
-    const auto stamp = this->now();
-    debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, stamp));
-    debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, stamp));
-    debug_coarse_aligned_pub_->publish(
-        toROSMsg(loop_closure_->getCoarseAlignedCloud(), map_frame_, stamp));
+  // Publish the submaps KISS-Matcher was actually fed, so we can see them in
+  // RViz even when bootstrap is failing.
+  const auto stamp = this->now();
+  debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, stamp));
+  debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, stamp));
+  debug_coarse_aligned_pub_->publish(
+      toROSMsg(loop_closure_->getCoarseAlignedCloud(), map_frame_, stamp));
 
-    if (!reg.is_valid_) {
-      RCLCPP_WARN(this->get_logger(),
-                  "  candidate prior=%lu rejected (overlap=%.1f%%).",
-                  match_idx,
-                  reg.overlapness_);
-      continue;
-    }
-    // reg.pose_ aligns the pre-transformed query (bootstrap_T_init_ * new-odom)
-    // into the prior frame, so compose to recover the raw new-odom -> prior
-    // transform.
-    T_priormap_from_newodom_ = reg.pose_ * bootstrap_T_init_;
-    reloc_succeeded_         = true;
-    reloc_scan_buffer_.clear();
-    RCLCPP_INFO(this->get_logger(),
-                "\033[1;32mBootstrap reloc succeeded via prior keyframe %lu "
-                "(inliers=%lu, overlap=%.1f%%). Pose graph will run in the "
-                "prior-map frame.\033[0m",
-                match_idx,
-                reg.num_final_inliers_,
+  if (!reg.is_valid_) {
+    RCLCPP_WARN(this->get_logger(),
+                "Bootstrap reloc rejected (overlap=%.1f%%). Sliding window "
+                "and retrying on the next buffered scan.",
                 reg.overlapness_);
-    return true;
+    // Slide the ring buffer so the next call swaps in a fresh scan.
+    reloc_scan_buffer_.pop_front();
+    return false;
   }
-  return false;
+
+  // reg.pose_ aligns the pre-transformed query (bootstrap_T_init_ * new-odom)
+  // into the prior frame, so compose to recover the raw new-odom -> prior
+  // transform.
+  T_priormap_from_newodom_     = reg.pose_ * bootstrap_T_init_;
+  reloc_succeeded_             = true;
+  pending_bootstrap_anchor_    = true;
+  pending_bootstrap_match_idx_ = center_idx;
+  reloc_scan_buffer_.clear();
+  RCLCPP_INFO(this->get_logger(),
+              "\033[1;32mBootstrap reloc succeeded against prior start region "
+              "(match idx=%lu, inliers=%lu, overlap=%.1f%%). Joint graph "
+              "will be anchored on the next keyframe.\033[0m",
+              center_idx,
+              reg.num_final_inliers_,
+              reg.overlapness_);
+  return true;
 }
 
 bool PoseGraphManager::loadPriorSession() {
