@@ -5,7 +5,7 @@
 # =====================================================================================
 /**:
   ros__parameters:
-    loop_pub_hz: 0.25                 # Frequency to publish loop closures (Hz)
+    loop_pub_hz: 0.5                 # Frequency to publish loop closures (Hz)
     loop_detector_hz: 2.0            # Frequency to update loop by external loop detector (Hz)
     loop_nnsearch_hz: 2.0            # Frequency to update loop by nearest neighbor search (Hz)
     loop_pub_delayed_time: 5.0      # Delay before publishing loop closure results (sec)
@@ -19,7 +19,7 @@
     scan_in_sensor_frame: true      # Set true when the scan topic is in the sensor/lidar frame
                                      # (e.g. raw driver output). Default false assumes the scan is
                                      # already in the odom frame (e.g. fast_lio/cloud_registered).
-    voxel_resolution: 0.5 #0.2            # ⭐ [Unit: m] Voxel grid resolution for downsampling
+    voxel_resolution: 0.5            # ⭐ [Unit: m] Voxel grid resolution for downsampling
     map_voxel_resolution: 0.5        # Resolution used when building map. Only for visualization
     save_voxel_resolution: 0.4       # Resolution used when saving voxelized map
 
@@ -38,7 +38,7 @@
       is_multilayer_env: false                # ⭐ Whether the robot operates in a multilayer environment
       # NOTE(hlim): You may need to tune `loop_detection_radius` and `loop_detection_timediff_threshold` for your environment
       # after checking the Loop closure radius marker in Rviz.
-      loop_detection_radius: 50.0             # ⭐ [Unit: m] Radius for detecting loop candidates.
+      loop_detection_radius: 25.0             # ⭐ [Unit: m] Radius for detecting loop candidates.
       loop_detection_timediff_threshold: 45.0 # ⭐ [Unit: t] Minimum time difference for loop candidates
 
     local_reg:
@@ -47,11 +47,11 @@
       max_num_iter: 32                # Maximum iterations for local registration
       # NOTE(hlim): `scale_factor_for_corr_dist` * `voxel_resolution` is set to
       # distance threshold for ICP-variants (i.e., it is a factor relative to voxel resolution)
-      scale_factor_for_corr_dist: 7.5 #5.0 # ⭐ Scale for correspondence search distance
+      scale_factor_for_corr_dist: 5.0 # ⭐ Scale for correspondence search distance
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
-      overlap_threshold: 45.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+      overlap_threshold: 40.0 # 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
                                       # (i.e., the percentage of correspondences within `corr_dist`).
                                       # A value close to 100% means the source and target are nearly perfectly aligned.
                                       # In cases of partial overlap, this ratio can never reach 100%.
@@ -62,7 +62,7 @@
       # NOTE(hlim): The best value of `num_inliers_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
-      num_inliers_threshold: 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+      num_inliers_threshold: 40 # 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
       enabled: true                    # If true, bootstrap into a previously saved session at startup
@@ -89,7 +89,7 @@
                                           # Use a smaller value than the global setting to give
                                           # KISS-Matcher more FPFH features when the initial
                                           # alignment is failing with too few inliers.
-      bootstrap_num_inliers_threshold: 16  # Minimum KISS-Matcher inliers required to accept a
+      bootstrap_num_inliers_threshold: 16 # Minimum KISS-Matcher inliers required to accept a
                                           # bootstrap candidate. < 0 reuses `global_reg.num_inliers_threshold`.
                                           # Typically lower than the steady-state value since the
                                           # initial cross-session alignment is harder to find.
@@ -104,10 +104,10 @@
                         0.0, 0.0, 1.0,  0.0,
                         0.0, 0.0, 0.0,  1.0]
     result:
-      save_map_pcd: false
+      save_map_pcd: true
       save_map_bag: false                 # not implemented yet
-      save_in_kitti_format: false          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
-      save_pose_graph: false               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
+      save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
+      save_pose_graph: true               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
       seq_name: "campus_robinw_re"
       save_dir: "/home/niksta/Documents/datasets"                          # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
