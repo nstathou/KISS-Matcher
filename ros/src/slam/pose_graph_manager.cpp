@@ -1020,6 +1020,17 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
   std::string seq_directory   = save_dir + "/" + seq_name_;
   std::string scans_directory = seq_directory + "/scans";
 
+  // Refresh the jointly-optimized estimate so prior-session poses reflect the
+  // latest ISAM2 solve (keyframe-tick updates only propagate when a loop
+  // closure lands; recalculating here keeps the dump current even without a
+  // recent LC).
+  const bool has_merged_session = reloc_enabled_ && !prior_keyframes_.empty();
+  gtsam::Values latest_esti;
+  if (has_merged_session) {
+    std::lock_guard<std::mutex> lock(graph_mutex_);
+    latest_esti = isam_handler_->calculateEstimate();
+  }
+
   if (save_in_kitti_format_) {
     RCLCPP_INFO(this->get_logger(),
                 "Scans are saved in %s, following the KITTI and TUM format",
@@ -1093,7 +1104,64 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
       std::lock_guard<std::mutex> lock_rt(realtime_pose_mutex_);
       gtsam::writeG2o(persistent_graph_, corrected_esti_, g2o_path);
     }
-    RCLCPP_INFO(this->get_logger(), "Pose graph saved to %s", g2o_path.c_str());
+    RCLCPP_INFO(this->get_logger(), "Pose graph saved to %s (combined prior + new)",
+                g2o_path.c_str());
+  }
+
+  // Merged-session outputs: when reloc is enabled and a prior session was
+  // loaded, also dump the prior-session poses and map in the common
+  // (jointly-optimized) frame so downstream tooling has both trajectories
+  // aligned. The combined graph.g2o above already carries both prefixes.
+  if (has_merged_session) {
+    if (!fs::exists(seq_directory)) {
+      fs::create_directories(seq_directory);
+    }
+
+    auto prior_pose_for = [&](size_t i) {
+      const gtsam::Symbol sym(prior_session_prefix_, i);
+      if (latest_esti.exists(sym)) {
+        return gtsamToEigen(latest_esti.at<gtsam::Pose3>(sym));
+      }
+      return prior_keyframes_[i].pose_corrected_;
+    };
+
+    if (save_in_kitti_format_) {
+      std::ofstream prior_kitti(seq_directory + "/poses_prior_kitti.txt");
+      std::ofstream prior_tum(seq_directory + "/poses_prior_tum.txt");
+      prior_tum << "#timestamp x y z qx qy qz qw\n";
+      for (size_t i = 0; i < prior_keyframes_.size(); ++i) {
+        const Eigen::Matrix4d p = prior_pose_for(i);
+        prior_kitti << p(0, 0) << " " << p(0, 1) << " " << p(0, 2) << " " << p(0, 3) << " "
+                    << p(1, 0) << " " << p(1, 1) << " " << p(1, 2) << " " << p(1, 3) << " "
+                    << p(2, 0) << " " << p(2, 1) << " " << p(2, 2) << " " << p(2, 3) << "\n";
+        const auto ps = eigenToPoseStamped(p, map_frame_);
+        prior_tum << std::fixed << std::setprecision(8) << prior_keyframes_[i].timestamp_
+                  << " " << ps.pose.position.x << " " << ps.pose.position.y << " "
+                  << ps.pose.position.z << " " << ps.pose.orientation.x << " "
+                  << ps.pose.orientation.y << " " << ps.pose.orientation.z << " "
+                  << ps.pose.orientation.w << "\n";
+      }
+      RCLCPP_INFO(this->get_logger(),
+                  "Prior-session poses saved (%lu keyframes) in common frame.",
+                  prior_keyframes_.size());
+    }
+
+    if (save_map_pcd_) {
+      pcl::PointCloud<PointType>::Ptr prior_map(new pcl::PointCloud<PointType>());
+      if (!prior_keyframes_.empty()) {
+        prior_map->reserve(prior_keyframes_[0].scan_.size() * prior_keyframes_.size());
+      }
+      for (size_t i = 0; i < prior_keyframes_.size(); ++i) {
+        *prior_map += transformPcd(prior_keyframes_[i].scan_, prior_pose_for(i));
+      }
+      const auto &voxelized = voxelize(prior_map, save_voxel_res_);
+      const std::string prior_map_path =
+          seq_directory + "/" + seq_name_ + "_prior_map.pcd";
+      pcl::io::savePCDFileASCII<PointType>(prior_map_path, *voxelized);
+      RCLCPP_INFO(this->get_logger(),
+                  "Prior-session map saved to %s (common frame).",
+                  prior_map_path.c_str());
+    }
   }
 }
 

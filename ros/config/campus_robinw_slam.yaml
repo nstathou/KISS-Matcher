@@ -51,7 +51,7 @@
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
-      overlap_threshold: 40.0 # 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+      overlap_threshold: 35.0 # 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
                                       # (i.e., the percentage of correspondences within `corr_dist`).
                                       # A value close to 100% means the source and target are nearly perfectly aligned.
                                       # In cases of partial overlap, this ratio can never reach 100%.
@@ -62,7 +62,7 @@
       # NOTE(hlim): The best value of `num_inliers_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
-      num_inliers_threshold: 40 # 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+      num_inliers_threshold: 32 # 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
       enabled: true                    # If true, bootstrap into a previously saved session at startup
