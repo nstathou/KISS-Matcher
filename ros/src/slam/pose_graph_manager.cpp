@@ -136,29 +136,33 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   if (package_path_.empty()) {
     package_path_ = fs::current_path().string();
   }
-  std::error_code ec;
-  const bool save_dir_exists = fs::exists(package_path_, ec);
-  if (ec) {
-    RCLCPP_ERROR(this->get_logger(),
-                 "Failed to query save directory '%s': %s",
-                 package_path_.c_str(),
-                 ec.message().c_str());
-    throw std::runtime_error("Invalid result.save_dir");
-  }
-  if (save_dir_exists) {
-    if (!fs::is_directory(package_path_, ec) || ec) {
-      RCLCPP_ERROR(this->get_logger(),
-                   "Save path exists but is not a directory: %s",
-                   package_path_.c_str());
-      throw std::runtime_error("result.save_dir must be a directory");
+  auto ensure_dir_or_fallback = [&](const std::string &preferred,
+                                    const std::string &fallback) {
+    std::error_code ec;
+    if (fs::exists(preferred, ec) && !ec && fs::is_directory(preferred, ec) && !ec) {
+      return preferred;
     }
-  } else if (!fs::create_directories(package_path_, ec) || ec) {
-    RCLCPP_ERROR(this->get_logger(),
-                 "Failed to create save directory '%s': %s",
-                 package_path_.c_str(),
-                 ec.message().c_str());
-    throw std::runtime_error("Could not create result.save_dir");
-  }
+
+    ec.clear();
+    if (fs::create_directories(preferred, ec) && !ec) {
+      return preferred;
+    }
+
+    RCLCPP_WARN(this->get_logger(),
+                "Configured save directory '%s' is not usable (%s). "
+                "Falling back to '%s'.",
+                preferred.c_str(),
+                ec.message().c_str(),
+                fallback.c_str());
+
+    ec.clear();
+    if (!fs::exists(fallback, ec)) {
+      ec.clear();
+      fs::create_directories(fallback, ec);
+    }
+    return fallback;
+  };
+  package_path_ = ensure_dir_or_fallback(package_path_, fs::current_path().string());
   RCLCPP_INFO(this->get_logger(), "Save directory: %s", package_path_.c_str());
 
   rclcpp::QoS qos(1);
