@@ -24,12 +24,12 @@
     save_voxel_resolution: 0.4       # Resolution used when saving voxelized map
 
     keyframe:
-      keyframe_threshold: 1.0 #0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
+      keyframe_threshold: 0.1 #0.5        # ⭐ [Unit: m] Distance threshold to add a new keyframe
       # NOTE(hlim): Once `num_submap_keyframes` is larger than 1,
       # Submap-to-submap registration is performed.
       # The main advantage of KISS-Matcher is its super-fast speed in submap matching!
       # see: https://arxiv.org/pdf/2409.15615
-      num_submap_keyframes: 10        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
+      num_submap_keyframes: 21        # ⭐ > 0. Number of keyframes per submap. It should be an odd number
 
     loop:
       verbose: true                  # Enable verbose output
@@ -51,7 +51,7 @@
       # NOTE(hlim): The best value of `overlap_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `overlap_threshold` enhances LC precision)
-      overlap_threshold: 35.0 # 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
+      overlap_threshold: 40.0 # 55.0         # ⭐ [Unit: %] Threshold for the ratio of ICP inliers
                                       # (i.e., the percentage of correspondences within `corr_dist`).
                                       # A value close to 100% means the source and target are nearly perfectly aligned.
                                       # In cases of partial overlap, this ratio can never reach 100%.
@@ -62,10 +62,10 @@
       # NOTE(hlim): The best value of `num_inliers_threshold` highly depends on `num_submap_keyframes`
       # Thus, heuristic tuning is required for the best performance.
       # Larger values make it more conservative (i.e., higher `num_inliers_threshold` enhances LC precision)
-      num_inliers_threshold: 32 # 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
+      num_inliers_threshold: 40 # 50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: true                    # If true, bootstrap into a previously saved session at startup
+      enabled: false                    # If true, bootstrap into a previously saved session at startup
       prior_map_pcd: "/home/niksta/Documents/datasets/campus_ouster/campus_ouster_map.pcd"  # Visualization only (published on /prior_map). Leave empty to skip.
       # Prior session dir is required when reloc is enabled. The directory must
       # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
@@ -108,7 +108,7 @@
       save_map_bag: false                 # not implemented yet
       save_in_kitti_format: true          # ros2 topic pub -1 /km_sam/save_dir std_msgs/String "data: ''"      
       save_pose_graph: true               # If true, dump graph.g2o alongside scans+poses (for inter-session LC)
-      seq_name: "campus_robinw_re"
+      seq_name: "campus_robinw_dense"
       save_dir: "/home/niksta/Documents/datasets"                          # Absolute directory for saved results.
                                           # If empty, falls back to the process's current working directory.
                                           # Used by the shutdown save path and as the default for the

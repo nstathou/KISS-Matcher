@@ -136,8 +136,28 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   if (package_path_.empty()) {
     package_path_ = fs::current_path().string();
   }
-  if (!fs::exists(package_path_)) {
-    fs::create_directories(package_path_);
+  std::error_code ec;
+  const bool save_dir_exists = fs::exists(package_path_, ec);
+  if (ec) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "Failed to query save directory '%s': %s",
+                 package_path_.c_str(),
+                 ec.message().c_str());
+    throw std::runtime_error("Invalid result.save_dir");
+  }
+  if (save_dir_exists) {
+    if (!fs::is_directory(package_path_, ec) || ec) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Save path exists but is not a directory: %s",
+                   package_path_.c_str());
+      throw std::runtime_error("result.save_dir must be a directory");
+    }
+  } else if (!fs::create_directories(package_path_, ec) || ec) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "Failed to create save directory '%s': %s",
+                 package_path_.c_str(),
+                 ec.message().c_str());
+    throw std::runtime_error("Could not create result.save_dir");
   }
   RCLCPP_INFO(this->get_logger(), "Save directory: %s", package_path_.c_str());
 
@@ -1020,6 +1040,25 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
   std::string seq_directory   = save_dir + "/" + seq_name_;
   std::string scans_directory = seq_directory + "/scans";
 
+  std::error_code ec;
+  if (fs::exists(save_dir, ec)) {
+    if (ec || !fs::is_directory(save_dir, ec) || ec) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Save path exists but is not a directory: %s",
+                   save_dir.c_str());
+      return;
+    }
+  } else {
+    ec.clear();
+    if (!fs::create_directories(save_dir, ec) || ec) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Failed to create save directory '%s': %s",
+                   save_dir.c_str(),
+                   ec.message().c_str());
+      return;
+    }
+  }
+
   // Refresh the jointly-optimized estimate so prior-session poses reflect the
   // latest ISAM2 solve (keyframe-tick updates only propagate when a loop
   // closure lands; recalculating here keeps the dump current even without a
@@ -1039,7 +1078,14 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
     if (fs::exists(seq_directory)) {
       fs::remove_all(seq_directory);
     }
-    fs::create_directories(scans_directory);
+    ec.clear();
+    if (!fs::create_directories(scans_directory, ec) || ec) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Failed to create scans directory '%s': %s",
+                   scans_directory.c_str(),
+                   ec.message().c_str());
+      return;
+    }
 
     std::ofstream kitti_pose_file(seq_directory + "/poses_kitti.txt");
     std::ofstream tum_pose_file(seq_directory + "/poses_tum.txt");
@@ -1096,7 +1142,14 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
   }
   if (save_pose_graph_) {
     if (!fs::exists(seq_directory)) {
-      fs::create_directories(seq_directory);
+      ec.clear();
+      if (!fs::create_directories(seq_directory, ec) || ec) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create sequence directory '%s': %s",
+                     seq_directory.c_str(),
+                     ec.message().c_str());
+        return;
+      }
     }
     const std::string g2o_path = seq_directory + "/graph.g2o";
     {
@@ -1114,7 +1167,14 @@ void PoseGraphManager::saveFlagCallback(const std_msgs::msg::String::ConstShared
   // aligned. The combined graph.g2o above already carries both prefixes.
   if (has_merged_session) {
     if (!fs::exists(seq_directory)) {
-      fs::create_directories(seq_directory);
+      ec.clear();
+      if (!fs::create_directories(seq_directory, ec) || ec) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to create sequence directory '%s': %s",
+                     seq_directory.c_str(),
+                     ec.message().c_str());
+        return;
+      }
     }
 
     auto prior_pose_for = [&](size_t i) {
