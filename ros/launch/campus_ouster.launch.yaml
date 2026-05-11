@@ -13,7 +13,7 @@ launch:
   - arg: {name: base_frame, default: 'vectornav', description: "Robot's base frame (kept for compatibility)"}
 
   - arg: {name: odom_topic, default: "/fast_lio/odometry"}
-  - arg: {name: scan_topic, default: "/fast_lio/cloud_registered_lidar"}
+  - arg: {name: scan_topic, default: "/fast_lio/cloud_registered"}
 
   - node:
       namespace: $(var namespace)

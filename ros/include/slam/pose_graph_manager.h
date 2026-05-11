@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -127,9 +128,11 @@ class PoseGraphManager : public rclcpp::Node {
   // scan until success.
   bool trySingleShotPCD();
 
-  // Callback for RViz "2D Goal Pose" (`/goal_pose`). Overwrites
-  // bootstrap_T_init_ under bootstrap_T_init_mutex_.
-  void goalPoseCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg);
+  // Callback for RViz "2D Pose Estimate" (`/initialpose`). Overwrites
+  // bootstrap_T_init_ under bootstrap_T_init_mutex_. RViz only sets x/y/yaw;
+  // roll/pitch/z are zero, so seed those via the YAML T_init when needed.
+  void initialPoseCallback(
+      const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr &msg);
 
   // Load a previously-saved session (scans/ + poses_tum.txt + graph.g2o) from
   // `prior_session_dir_`, populate `prior_keyframes_`, re-key the loaded graph
@@ -206,6 +209,14 @@ class PoseGraphManager : public rclcpp::Node {
   kiss_matcher::TicToc timer_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+  // Cached static transform from the scan's frame (lidar) to base_frame_,
+  // looked up once on first /initialpose attempt. Used to seed registration
+  // at the correct lidar pose in prior-map frame.
+  std::string lidar_frame_;
+  Eigen::Matrix4d T_base_from_lidar_       = Eigen::Matrix4d::Identity();
+  bool T_base_from_lidar_valid_            = false;
 
   pcl::PointCloud<pcl::PointXYZ> odoms_, corrected_odoms_;
   nav_msgs::msg::Path odom_path_, corrected_path_;
@@ -237,13 +248,31 @@ class PoseGraphManager : public rclcpp::Node {
   bool pgo_load_prior_               = false;
   bool pgo_add_anchor_               = false;
   bool pgo_continuous_lc_            = false;
-  // RViz `/goal_pose` runtime input for bootstrap_T_init_.
-  bool accept_goal_pose_             = false;
   bool reloc_succeeded_              = false;
   std::string prior_map_pcd_path_;
-  // Single-shot scan-vs-PCD parameters.
-  double single_shot_voxel_resolution_   = 0.5;
-  int single_shot_num_inliers_threshold_ = -1;
+  // Single-shot scan-vs-PCD parameters. Source = current scan voxelized at
+  // `scan_voxel_resolution_`; target = prior PCD voxelized at
+  // `map_voxel_resolution_` at load time.
+  double single_shot_scan_voxel_resolution_ = 0.5;
+  double single_shot_map_voxel_resolution_  = 0.5;
+  int single_shot_num_inliers_threshold_    = -1;
+  // Two-stage registration for the /initialpose-seeded path: a coarse GICP
+  // with a wide correspondence cutoff to absorb click error, then a fine
+  // GICP for accuracy. Fully independent of LoopClosure's local_reg_handler_.
+  struct SingleShotIcpStage {
+    std::string type             = "GICP";
+    int num_threads              = 8;
+    int correspondence_rand      = 20;
+    double max_corr_dist         = 1.0;
+    double voxel_resolution      = 0.5;  // VGICP only
+    int max_num_iter             = 64;
+    std::shared_ptr<small_gicp::RegistrationPCL<PointType, PointType>> handler;
+  };
+  SingleShotIcpStage single_shot_icp_coarse_;
+  SingleShotIcpStage single_shot_icp_fine_;
+  // [m] Crop prior map to points within this radius of the seeded robot
+  // position before GICP. <= 0 disables cropping (uses full prior map).
+  double single_shot_icp_crop_radius_         = -1.0;
   // Bootstrap reloc parameters. The bootstrap module collects
   // `num_submap_keyframes_` scans on the new-session side and matches them
   // against the first `num_submap_keyframes_` keyframes of the prior session
@@ -266,6 +295,15 @@ class PoseGraphManager : public rclcpp::Node {
   // reg.pose_ * bootstrap_T_init_. Identity = no prior knowledge.
   Eigen::Matrix4d bootstrap_T_init_ = Eigen::Matrix4d::Identity();
   std::mutex bootstrap_T_init_mutex_;
+  // Latest odom-frame pose snapshot, written by callbackNode and read by
+  // initialPoseCallback so the click-time pose can be inverted into T_init.
+  // Guarded by bootstrap_T_init_mutex_ to avoid adding another lock.
+  Eigen::Matrix4d latest_odom_pose_       = Eigen::Matrix4d::Identity();
+  bool latest_odom_pose_valid_            = false;
+  // True after /initialpose updates T_init and not yet consumed by an init
+  // attempt. When set, the next attempt skips KISS-Matcher global alignment
+  // and runs VGICP only, seeded from T_init.
+  bool has_fresh_initial_pose_            = false;
   Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
   bool reloc_has_last_accum_pose_        = false;
   // Ring buffer of recent new-session scans (already transformed poses in
@@ -311,7 +349,8 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr prior_map_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_save_flag_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_goal_pose_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+      sub_initial_pose_;
 
   // rclcpp::Publisher<pose_graph_tools_msgs::msg::PoseGraph>::SharedPtr loop_closures_pub_;
 

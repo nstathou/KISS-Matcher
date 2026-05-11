@@ -69,7 +69,6 @@
         # single_shot_pcd  -> match current scan against prior.map_pcd
         # submap_bootstrap -> accumulate N scans, match against first N prior keyframes
         mode: "off"
-        accept_goal_pose: false         # If true, subscribe to /goal_pose; updates T_init at runtime
         # Optional initial guess applied to query pose before registration.
         # Row-major 4x4. Default is identity.
         T_init: [1.0, 0.0, 0.0, 0.0,
@@ -77,8 +76,26 @@
                  0.0, 0.0, 1.0, 0.0,
                  0.0, 0.0, 0.0, 1.0]
         single_shot:
-          voxel_resolution: 0.5         # Voxel size for current scan downsampling
-          num_inliers_threshold: -1     # < 0 reuses global_reg.num_inliers_threshold
+          scan_voxel_resolution: 0.5    # Voxel size for current scan (source) downsampling
+          map_voxel_resolution: 0.5     # Voxel size for prior PCD (target) downsampling at load time
+          num_inliers_threshold: -1     # < 0 reuses global_reg.num_inliers_threshold (KISS-Matcher path; /initialpose path is ungated)
+          # Dedicated 2-stage ICP for the /initialpose-seeded path. Fully independent of local_reg.
+          icp:
+            crop_radius: -1.0                   # [m] crop prior map around seeded pose before either stage. <= 0 disables.
+            coarse:                             # Stage 1: wide cutoff to absorb RViz click error.
+              registration_type: "VGICP"        # VGICP regularizes via voxelmap → more tolerant of poor initial guess
+              num_threads: 8
+              correspondence_randomness: 20
+              max_corr_dist: 5.0
+              voxel_resolution: 0.5             # VGICP only
+              max_num_iter: 32
+            fine:                               # Stage 2: tight cutoff seeded by coarse result.
+              registration_type: "GICP"
+              num_threads: 8
+              correspondence_randomness: 20
+              max_corr_dist: 1.0
+              voxel_resolution: 0.5
+              max_num_iter: 64
         submap_bootstrap:
           scan_distance: 0.5            # [m] Min base-frame motion before pushing next scan into buffer
           voxel_resolution: -1.0        # < 0 reuses global voxel_resolution

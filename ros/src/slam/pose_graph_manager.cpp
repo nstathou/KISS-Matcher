@@ -81,7 +81,6 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       init_mode_ = InitMode::Off;
     }
   }
-  accept_goal_pose_ = declare_parameter<bool>("relocalization.init.accept_goal_pose", false);
   {
     const std::vector<double> identity16 = {
         1.0, 0.0, 0.0, 0.0,
@@ -108,10 +107,37 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       }
     }
   }
-  single_shot_voxel_resolution_ = declare_parameter<double>(
-      "relocalization.init.single_shot.voxel_resolution", 0.5);
+  single_shot_scan_voxel_resolution_ = declare_parameter<double>(
+      "relocalization.init.single_shot.scan_voxel_resolution", 0.5);
+  single_shot_map_voxel_resolution_ = declare_parameter<double>(
+      "relocalization.init.single_shot.map_voxel_resolution", 0.5);
   single_shot_num_inliers_threshold_ = declare_parameter<int>(
       "relocalization.init.single_shot.num_inliers_threshold", -1);
+  // Two-stage ICP (coarse → fine) for the /initialpose-seeded path.
+  auto load_stage = [this](const std::string &base, SingleShotIcpStage &s,
+                           double default_corr, int default_iter) {
+    s.type = declare_parameter<std::string>(base + ".registration_type", "GICP");
+    s.num_threads = declare_parameter<int>(base + ".num_threads", 8);
+    s.correspondence_rand = declare_parameter<int>(
+        base + ".correspondence_randomness", 20);
+    s.max_corr_dist = declare_parameter<double>(base + ".max_corr_dist", default_corr);
+    s.voxel_resolution = declare_parameter<double>(base + ".voxel_resolution", 0.5);
+    s.max_num_iter = declare_parameter<int>(base + ".max_num_iter", default_iter);
+    s.handler =
+        std::make_shared<small_gicp::RegistrationPCL<PointType, PointType>>();
+    s.handler->setRegistrationType(s.type);
+    s.handler->setNumThreads(s.num_threads);
+    s.handler->setCorrespondenceRandomness(s.correspondence_rand);
+    s.handler->setMaxCorrespondenceDistance(s.max_corr_dist);
+    s.handler->setVoxelResolution(s.voxel_resolution);
+    s.handler->setMaximumIterations(s.max_num_iter);
+  };
+  load_stage("relocalization.init.single_shot.icp.coarse",
+             single_shot_icp_coarse_, 5.0, 32);
+  load_stage("relocalization.init.single_shot.icp.fine",
+             single_shot_icp_fine_, 1.0, 64);
+  single_shot_icp_crop_radius_ = declare_parameter<double>(
+      "relocalization.init.single_shot.icp.crop_radius", -1.0);
   bootstrap_scan_distance_ = declare_parameter<double>(
       "relocalization.init.submap_bootstrap.scan_distance", 0.5);
   bootstrap_voxel_resolution_ = declare_parameter<double>(
@@ -144,9 +170,11 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   pgo_continuous_lc_ = declare_parameter<bool>("relocalization.pgo.continuous_inter_session_lc", false);
 
   // --- Validation: downgrade individual features rather than killing everything. ---
-  if (init_mode_ == InitMode::SingleShotPCD && prior_map_pcd_path_.empty()) {
+  if (init_mode_ == InitMode::SingleShotPCD &&
+      prior_map_pcd_path_.empty() && prior_session_dir_.empty()) {
     RCLCPP_ERROR(this->get_logger(),
-                 "init.mode=single_shot_pcd requires prior.map_pcd. Disabling init.");
+                 "init.mode=single_shot_pcd requires either prior.map_pcd or "
+                 "prior.session_dir. Disabling init.");
     init_mode_ = InitMode::Off;
   }
   if (init_mode_ == InitMode::SubmapBootstrap && prior_session_dir_.empty()) {
@@ -190,17 +218,54 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
                   prior_map_pcd_path_.c_str());
       prior_map_cloud_ = nullptr;
     } else {
-      const auto &voxelized = voxelize(prior_map_cloud_, map_voxel_res_);
+      // Voxelize at the single-shot map resolution when that init mode is
+      // selected, so the matching target uses the dedicated tuning. Otherwise
+      // fall back to map_voxel_res_ (visualization-only path).
+      const double prior_map_voxel = (init_mode_ == InitMode::SingleShotPCD)
+                                         ? single_shot_map_voxel_resolution_
+                                         : map_voxel_res_;
+      const auto &voxelized = voxelize(prior_map_cloud_, prior_map_voxel);
       *prior_map_cloud_     = *voxelized;
       RCLCPP_INFO(this->get_logger(),
-                  "Loaded prior map '%s' with %lu points.",
+                  "Loaded prior map '%s' with %lu points (voxel=%.3f m).",
                   prior_map_pcd_path_.c_str(),
-                  prior_map_cloud_->size());
+                  prior_map_cloud_->size(),
+                  prior_map_voxel);
+    }
+  }
+  // Fallback: no map_pcd, but a session_dir is available → synthesize the prior
+  // map from scans+poses inside session_dir. Same target the recorded session
+  // would have produced with save_map_pcd=true.
+  if ((!prior_map_cloud_ || prior_map_cloud_->empty()) && !prior_session_dir_.empty()) {
+    RCLCPP_INFO(this->get_logger(),
+                "prior.map_pcd empty/missing; synthesizing prior map from "
+                "session_dir='%s'.",
+                prior_session_dir_.c_str());
+    if (loadPriorSession(false)) {
+      auto synthesized = std::make_shared<pcl::PointCloud<PointType>>();
+      synthesized->reserve(prior_keyframes_.size() * 1024);
+      for (const auto &kf : prior_keyframes_) {
+        const auto transformed = transformPcd(kf.scan_, kf.pose_corrected_);
+        *synthesized += transformed;
+      }
+      const double prior_map_voxel = (init_mode_ == InitMode::SingleShotPCD)
+                                         ? single_shot_map_voxel_resolution_
+                                         : map_voxel_res_;
+      prior_map_cloud_ = voxelize(synthesized, prior_map_voxel);
+      RCLCPP_INFO(this->get_logger(),
+                  "Synthesized prior map from %lu keyframes → %lu points "
+                  "(voxel=%.3f m).",
+                  prior_keyframes_.size(), prior_map_cloud_->size(),
+                  prior_map_voxel);
+    } else {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Failed to load session_dir; cannot synthesize prior map.");
     }
   }
   if (init_mode_ == InitMode::SingleShotPCD && (!prior_map_cloud_ || prior_map_cloud_->empty())) {
     RCLCPP_ERROR(this->get_logger(),
-                 "init.mode=single_shot_pcd but prior map PCD failed to load. Disabling init.");
+                 "init.mode=single_shot_pcd but no prior map could be loaded "
+                 "(map_pcd missing/failed AND session_dir unavailable). Disabling init.");
     init_mode_ = InitMode::Off;
   }
 
@@ -223,6 +288,8 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
 
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  tf_buffer_      = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_    = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
   // With relocalization enabled the sync callback returns early until the
   // prior-map alignment succeeds, so the cache would never be written and
@@ -330,13 +397,11 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   sub_save_flag_ = this->create_subscription<std_msgs::msg::String>(
       "save_dir", 1, std::bind(&PoseGraphManager::saveFlagCallback, this, std::placeholders::_1));
 
-  if (accept_goal_pose_) {
-    sub_goal_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/goal_pose", 1,
-        std::bind(&PoseGraphManager::goalPoseCallback, this, std::placeholders::_1));
-    RCLCPP_INFO(this->get_logger(),
-                "Listening on /goal_pose for runtime init T_init updates.");
-  }
+  sub_initial_pose_ =
+      this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+          "/initialpose", 1,
+          std::bind(&PoseGraphManager::initialPoseCallback, this,
+                    std::placeholders::_1));
 
   // hydra_loop_timer_ = this->create_wall_timer(
   //   std::chrono::duration<double>(1.0 / loop_pub_hz),
@@ -441,6 +506,17 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
                                   scan_voxel_res_,
                                   store_voxelized_scan_,
                                   scan_in_sensor_frame_);
+
+  // Publish the raw odom-frame pose so /initialpose clicks can invert it into
+  // T_init = clicked * odom_pose^-1.
+  {
+    std::lock_guard<std::mutex> lock(bootstrap_T_init_mutex_);
+    latest_odom_pose_       = current_frame_.pose_;
+    latest_odom_pose_valid_ = true;
+  }
+  if (lidar_frame_.empty()) {
+    lidar_frame_ = scan_msg->header.frame_id;
+  }
 
   kiss_matcher::TicToc total_timer;
   kiss_matcher::TicToc local_timer;
@@ -1322,33 +1398,189 @@ bool PoseGraphManager::trySingleShotPCD() {
     return false;
   }
 
-  // Snapshot init guess under the goal-pose mutex (RViz callback may race).
+  // Snapshot init guess + fresh-pose latch under the same mutex. When the
+  // user just clicked /initialpose, T_init already places the scan close to
+  // the truth, so we skip KISS-Matcher global alignment and refine with
+  // VGICP only. Without a fresh click, fall back to full coarse-to-fine.
   Eigen::Matrix4d T_init;
+  bool use_icp_only;
   {
     std::lock_guard<std::mutex> lock(bootstrap_T_init_mutex_);
-    T_init = bootstrap_T_init_;
+    T_init                  = bootstrap_T_init_;
+    use_icp_only            = has_fresh_initial_pose_;
+    has_fresh_initial_pose_ = false;
   }
 
-  // Source = current scan voxelized at the configured resolution, transformed
-  // into the (approximate) prior frame via T_init * current_pose. KISS-Matcher
-  // resolves the residual.
+  // Source = current scan voxelized at the configured resolution. Scan is in
+  // lidar frame; we don't pre-transform — registration runs with T_src as guess.
   pcl::PointCloud<PointType> src_voxelized =
-      *voxelize(current_frame_.scan_, single_shot_voxel_resolution_);
-  const Eigen::Matrix4d T_src = T_init * current_frame_.pose_;
-  pcl::PointCloud<PointType> src = transformPcd(src_voxelized, T_src);
+      *voxelize(current_frame_.scan_, single_shot_scan_voxel_resolution_);
+  // Look up base→lidar once (static extrinsic). If lidar_frame_ == base_frame_
+  // or the lookup fails, leave as identity.
+  if (!T_base_from_lidar_valid_ && !lidar_frame_.empty()) {
+    if (lidar_frame_ == base_frame_) {
+      T_base_from_lidar_       = Eigen::Matrix4d::Identity();
+      T_base_from_lidar_valid_ = true;
+      RCLCPP_INFO(this->get_logger(),
+                  "scan frame_id == base_frame ('%s'); no extrinsic to apply.",
+                  base_frame_.c_str());
+    } else {
+      try {
+        const auto tfs = tf_buffer_->lookupTransform(
+            base_frame_, lidar_frame_, tf2::TimePointZero,
+            tf2::durationFromSec(1.0));
+        const auto &t = tfs.transform.translation;
+        const auto &q = tfs.transform.rotation;
+        tf2::Quaternion qq(q.x, q.y, q.z, q.w);
+        tf2::Matrix3x3 rot_tf(qq);
+        Eigen::Matrix3d rot;
+        matrixTF2ToEigen(rot_tf, rot);
+        T_base_from_lidar_.setIdentity();
+        T_base_from_lidar_.block<3, 3>(0, 0) = rot;
+        T_base_from_lidar_(0, 3) = t.x;
+        T_base_from_lidar_(1, 3) = t.y;
+        T_base_from_lidar_(2, 3) = t.z;
+        T_base_from_lidar_valid_ = true;
+        RCLCPP_INFO(this->get_logger(),
+                    "Cached T_base_from_lidar ('%s' → '%s'): t=(%.3f, %.3f, %.3f).",
+                    lidar_frame_.c_str(), base_frame_.c_str(), t.x, t.y, t.z);
+      } catch (const tf2::TransformException &e) {
+        RCLCPP_WARN(this->get_logger(),
+                    "TF lookup '%s' → '%s' failed: %s. Using identity.",
+                    lidar_frame_.c_str(), base_frame_.c_str(), e.what());
+      }
+    }
+  }
+  // T_src seeds align() with lidar-in-priormap (so it operates on raw scan_).
+  const Eigen::Matrix4d T_pose_in_priormap = T_init * current_frame_.pose_;
+  const Eigen::Matrix4d T_src = T_pose_in_priormap * T_base_from_lidar_;
+  pcl::PointCloud<PointType> src_in_priormap = transformPcd(src_voxelized, T_src);
 
   // Target = prior PCD already voxelized at map_voxel_res_ in the ctor.
   const pcl::PointCloud<PointType> &tgt = *prior_map_cloud_;
 
-  loop_closure_->setSrcAndTgtCloud(src, tgt);
-  const RegOutput reg = loop_closure_->coarseToFineAlignment(
-      src, tgt, single_shot_num_inliers_threshold_);
-
+  RegOutput reg;
   const auto stamp = this->now();
-  debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, stamp));
-  debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, stamp));
-  debug_coarse_aligned_pub_->publish(
-      toROSMsg(loop_closure_->getCoarseAlignedCloud(), map_frame_, stamp));
+  if (use_icp_only) {
+    RCLCPP_INFO(this->get_logger(),
+                "Single-shot reloc: /initialpose seed → 2-stage GICP "
+                "(coarse: %s max_corr=%.2fm iters=%d | fine: %s max_corr=%.2fm "
+                "iters=%d | crop=%.1fm).",
+                single_shot_icp_coarse_.type.c_str(),
+                single_shot_icp_coarse_.max_corr_dist,
+                single_shot_icp_coarse_.max_num_iter,
+                single_shot_icp_fine_.type.c_str(),
+                single_shot_icp_fine_.max_corr_dist,
+                single_shot_icp_fine_.max_num_iter,
+                single_shot_icp_crop_radius_);
+    // Source kept in lidar frame; T_src is passed as initial guess instead.
+    pcl::PointCloud<PointType>::Ptr src_ptr(new pcl::PointCloud<PointType>(src_voxelized));
+    // Crop target to a radius around the seeded robot position. Reduces
+    // KdTree size and prevents GICP from being pulled by far-away geometry.
+    pcl::PointCloud<PointType>::Ptr tgt_ptr(new pcl::PointCloud<PointType>());
+    if (single_shot_icp_crop_radius_ > 0.0) {
+      const Eigen::Vector3d c = T_src.block<3, 1>(0, 3);
+      const double r2         = single_shot_icp_crop_radius_ *
+                                single_shot_icp_crop_radius_;
+      tgt_ptr->reserve(tgt.size());
+      for (const auto &pt : tgt.points) {
+        const double dx = pt.x - c.x();
+        const double dy = pt.y - c.y();
+        const double dz = pt.z - c.z();
+        if (dx * dx + dy * dy + dz * dz <= r2) {
+          tgt_ptr->push_back(pt);
+        }
+      }
+      tgt_ptr->width    = tgt_ptr->size();
+      tgt_ptr->height   = 1;
+      tgt_ptr->is_dense = false;
+      RCLCPP_INFO(this->get_logger(),
+                  "Cropped prior map: %zu → %zu points (radius=%.1fm around "
+                  "seed %.2f, %.2f, %.2f).",
+                  tgt.size(), tgt_ptr->size(),
+                  single_shot_icp_crop_radius_, c.x(), c.y(), c.z());
+      if (tgt_ptr->empty()) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Cropped prior map is empty; aborting attempt.");
+        return false;
+      }
+    } else {
+      *tgt_ptr = tgt;
+    }
+    RCLCPP_INFO(this->get_logger(),
+                "Cloud sizes: src=%zu (lidar frame), tgt=%zu (cropped). "
+                "T_src translation seed=(%.2f, %.2f, %.2f).",
+                src_ptr->size(), tgt_ptr->size(),
+                T_src(0, 3), T_src(1, 3), T_src(2, 3));
+
+    // Stage 1: coarse — wide max_corr_dist absorbs RViz click error.
+    // align() seeded with T_src; getFinalTransformation returns full T_base_in_priormap.
+    pcl::PointCloud<PointType> coarse_aligned;
+    single_shot_icp_coarse_.handler->setInputTarget(tgt_ptr);
+    single_shot_icp_coarse_.handler->setInputSource(src_ptr);
+    single_shot_icp_coarse_.handler->align(coarse_aligned, T_src.cast<float>());
+    const Eigen::Matrix4d T_coarse_full =
+        single_shot_icp_coarse_.handler->getFinalTransformation().cast<double>();
+    const bool coarse_converged = single_shot_icp_coarse_.handler->hasConverged();
+    const double coarse_fitness = single_shot_icp_coarse_.handler->getFitnessScore();
+    const auto &coarse_res = single_shot_icp_coarse_.handler->getRegistrationResult();
+    {
+      const Eigen::Vector3d dt = T_coarse_full.block<3, 1>(0, 3) -
+                                  T_src.block<3, 1>(0, 3);
+      RCLCPP_INFO(this->get_logger(),
+                  "Coarse (%s): converged=%s iters=%zu inliers=%zu error=%.4f "
+                  "fitness=%.4f Δt=(%.4f, %.4f, %.4f).",
+                  single_shot_icp_coarse_.type.c_str(),
+                  coarse_converged ? "YES" : "NO",
+                  coarse_res.iterations, coarse_res.num_inliers, coarse_res.error,
+                  coarse_fitness, dt.x(), dt.y(), dt.z());
+    }
+
+    // Stage 2: fine — tight cutoff seeded by coarse result. Source stays in
+    // lidar frame; coarse result is passed as guess.
+    pcl::PointCloud<PointType> fine_aligned;
+    single_shot_icp_fine_.handler->setInputTarget(tgt_ptr);
+    single_shot_icp_fine_.handler->setInputSource(src_ptr);
+    single_shot_icp_fine_.handler->align(fine_aligned, T_coarse_full.cast<float>());
+    const Eigen::Matrix4d T_fine_full =
+        single_shot_icp_fine_.handler->getFinalTransformation().cast<double>();
+    const bool fine_converged = single_shot_icp_fine_.handler->hasConverged();
+    const double fine_fitness = single_shot_icp_fine_.handler->getFitnessScore();
+    const auto &fine_res = single_shot_icp_fine_.handler->getRegistrationResult();
+    {
+      const Eigen::Vector3d dt = T_fine_full.block<3, 1>(0, 3) -
+                                  T_coarse_full.block<3, 1>(0, 3);
+      RCLCPP_INFO(this->get_logger(),
+                  "Fine   (%s): converged=%s iters=%zu inliers=%zu error=%.4f "
+                  "fitness=%.4f Δt=(%.4f, %.4f, %.4f).",
+                  single_shot_icp_fine_.type.c_str(),
+                  fine_converged ? "YES" : "NO",
+                  fine_res.iterations, fine_res.num_inliers, fine_res.error,
+                  fine_fitness, dt.x(), dt.y(), dt.z());
+    }
+
+    // T_fine_full = lidar-in-priormap (we passed src in lidar frame, seeded
+    // by T_src = T_init * pose_odom * T_base_from_lidar). Strip the extrinsic
+    // to recover base-in-priormap, then compose so the dispatcher's
+    // `reg.pose_ * T_init` yields the right T_priormap_from_newodom_.
+    const Eigen::Matrix4d T_base_in_priormap =
+        T_fine_full * T_base_from_lidar_.inverse();
+    reg.pose_         = T_base_in_priormap * T_pose_in_priormap.inverse();
+    reg.is_valid_     = true;
+    reg.is_converged_ = true;
+    debug_src_pub_->publish(toROSMsg(src_in_priormap, map_frame_, stamp));
+    debug_tgt_pub_->publish(toROSMsg(*tgt_ptr, map_frame_, stamp));
+    debug_coarse_aligned_pub_->publish(toROSMsg(coarse_aligned, map_frame_, stamp));
+    debug_fine_aligned_pub_->publish(toROSMsg(fine_aligned, map_frame_, stamp));
+  } else {
+    loop_closure_->setSrcAndTgtCloud(src_in_priormap, tgt);
+    reg = loop_closure_->coarseToFineAlignment(
+        src_in_priormap, tgt, single_shot_num_inliers_threshold_);
+    debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, stamp));
+    debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, stamp));
+    debug_coarse_aligned_pub_->publish(
+        toROSMsg(loop_closure_->getCoarseAlignedCloud(), map_frame_, stamp));
+  }
 
   if (!reg.is_valid_) {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
@@ -1375,38 +1607,53 @@ bool PoseGraphManager::trySingleShotPCD() {
   return true;
 }
 
-void PoseGraphManager::goalPoseCallback(
-    const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg) {
+void PoseGraphManager::initialPoseCallback(
+    const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr &msg) {
   if (init_mode_ == InitMode::Off) {
     RCLCPP_WARN(this->get_logger(),
-                "/goal_pose received but init.mode=off; ignoring.");
+                "/initialpose received but init.mode=off; ignoring.");
     return;
   }
   if (reloc_succeeded_) {
     RCLCPP_WARN(this->get_logger(),
-                "/goal_pose received but relocalization already succeeded; ignoring.");
+                "/initialpose received but relocalization already succeeded; ignoring.");
     return;
   }
 
-  tf2::Quaternion q(msg->pose.orientation.x, msg->pose.orientation.y,
-                    msg->pose.orientation.z, msg->pose.orientation.w);
+  const auto &p = msg->pose.pose;
+  tf2::Quaternion q(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w);
   tf2::Matrix3x3 rot_tf(q);
   Eigen::Matrix3d rot;
   matrixTF2ToEigen(rot_tf, rot);
 
-  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
-  T.block<3, 3>(0, 0) = rot;
-  T(0, 3) = msg->pose.position.x;
-  T(1, 3) = msg->pose.position.y;
-  T(2, 3) = msg->pose.position.z;
+  Eigen::Matrix4d T_robot_in_map = Eigen::Matrix4d::Identity();
+  T_robot_in_map.block<3, 3>(0, 0) = rot;
+  T_robot_in_map(0, 3)             = p.position.x;
+  T_robot_in_map(1, 3)             = p.position.y;
+  T_robot_in_map(2, 3)             = p.position.z;
 
+  // /initialpose is "robot is HERE NOW in the prior map", not an initial
+  // frame guess. Convert by inverting the current odom-frame pose:
+  //   T_init = T_robot_in_map * T_robot_in_odom^-1
+  // so that T_init * current_pose ≈ clicked pose at click time.
+  Eigen::Matrix4d T_init;
   {
     std::lock_guard<std::mutex> lock(bootstrap_T_init_mutex_);
-    bootstrap_T_init_ = T;
+    if (!latest_odom_pose_valid_) {
+      RCLCPP_WARN(this->get_logger(),
+                  "/initialpose received before any odom; ignoring.");
+      return;
+    }
+    T_init = T_robot_in_map * latest_odom_pose_.inverse();
+    bootstrap_T_init_       = T_init;
+    has_fresh_initial_pose_ = true;
   }
   RCLCPP_INFO(this->get_logger(),
-              "/goal_pose updated init T_init to translation=(%.3f, %.3f, %.3f).",
-              T(0, 3), T(1, 3), T(2, 3));
+              "/initialpose: robot @ (%.3f, %.3f, %.3f). "
+              "Derived T_init t=(%.3f, %.3f, %.3f). "
+              "Next init attempt will skip global registration and run VGICP only.",
+              T_robot_in_map(0, 3), T_robot_in_map(1, 3), T_robot_in_map(2, 3),
+              T_init(0, 3), T_init(1, 3), T_init(2, 3));
 }
 
 bool PoseGraphManager::loadPriorSession(bool insert_into_isam) {
@@ -1431,6 +1678,17 @@ bool PoseGraphManager::loadPriorSession(bool insert_into_isam) {
     return false;
   }
 
+  const bool already_loaded = !prior_keyframes_.empty();
+  if (already_loaded) {
+    RCLCPP_INFO(this->get_logger(),
+                "[prior] %lu keyframes already cached; skipping scan/pose load.",
+                prior_keyframes_.size());
+    if (!insert_into_isam) {
+      return true;
+    }
+  }
+
+  if (!already_loaded) {
   RCLCPP_INFO(this->get_logger(), "[prior] Parsing poses_tum.txt ...");
   std::ifstream pf(poses_path);
   std::string line;
@@ -1494,6 +1752,7 @@ bool PoseGraphManager::loadPriorSession(bool insert_into_isam) {
   RCLCPP_INFO(this->get_logger(),
               "Loaded %lu prior keyframes from %s",
               prior_keyframes_.size(), prior_session_dir_.c_str());
+  }  // !already_loaded
 
   gtsam::NonlinearFactorGraph prior_graph;
   gtsam::Values prior_values;
