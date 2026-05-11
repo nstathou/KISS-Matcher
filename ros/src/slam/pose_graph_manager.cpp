@@ -1411,49 +1411,16 @@ bool PoseGraphManager::trySingleShotPCD() {
     has_fresh_initial_pose_ = false;
   }
 
-  // Source = current scan voxelized at the configured resolution. Scan is in
-  // lidar frame; we don't pre-transform — registration runs with T_src as guess.
+  // Source = current scan voxelized at the configured resolution. PoseGraphNode
+  // stripped the scan via pose_.inverse() (see pose_graph_node.hpp), so
+  // T_src * scan_ = (T_init * pose_) * pose_.inverse() * cloud_registered
+  //               = T_init * cloud_registered.
+  // The extrinsic cancels — no lidar→base TF needs to be applied here,
+  // regardless of which frame fast-lio's /Odometry tracks.
   pcl::PointCloud<PointType> src_voxelized =
       *voxelize(current_frame_.scan_, single_shot_scan_voxel_resolution_);
-  // Look up base→lidar once (static extrinsic). If lidar_frame_ == base_frame_
-  // or the lookup fails, leave as identity.
-  if (!T_base_from_lidar_valid_ && !lidar_frame_.empty()) {
-    if (lidar_frame_ == base_frame_) {
-      T_base_from_lidar_       = Eigen::Matrix4d::Identity();
-      T_base_from_lidar_valid_ = true;
-      RCLCPP_INFO(this->get_logger(),
-                  "scan frame_id == base_frame ('%s'); no extrinsic to apply.",
-                  base_frame_.c_str());
-    } else {
-      try {
-        const auto tfs = tf_buffer_->lookupTransform(
-            base_frame_, lidar_frame_, tf2::TimePointZero,
-            tf2::durationFromSec(1.0));
-        const auto &t = tfs.transform.translation;
-        const auto &q = tfs.transform.rotation;
-        tf2::Quaternion qq(q.x, q.y, q.z, q.w);
-        tf2::Matrix3x3 rot_tf(qq);
-        Eigen::Matrix3d rot;
-        matrixTF2ToEigen(rot_tf, rot);
-        T_base_from_lidar_.setIdentity();
-        T_base_from_lidar_.block<3, 3>(0, 0) = rot;
-        T_base_from_lidar_(0, 3) = t.x;
-        T_base_from_lidar_(1, 3) = t.y;
-        T_base_from_lidar_(2, 3) = t.z;
-        T_base_from_lidar_valid_ = true;
-        RCLCPP_INFO(this->get_logger(),
-                    "Cached T_base_from_lidar ('%s' → '%s'): t=(%.3f, %.3f, %.3f).",
-                    lidar_frame_.c_str(), base_frame_.c_str(), t.x, t.y, t.z);
-      } catch (const tf2::TransformException &e) {
-        RCLCPP_WARN(this->get_logger(),
-                    "TF lookup '%s' → '%s' failed: %s. Using identity.",
-                    lidar_frame_.c_str(), base_frame_.c_str(), e.what());
-      }
-    }
-  }
-  // T_src seeds align() with lidar-in-priormap (so it operates on raw scan_).
   const Eigen::Matrix4d T_pose_in_priormap = T_init * current_frame_.pose_;
-  const Eigen::Matrix4d T_src = T_pose_in_priormap * T_base_from_lidar_;
+  const Eigen::Matrix4d T_src              = T_pose_in_priormap;
   pcl::PointCloud<PointType> src_in_priormap = transformPcd(src_voxelized, T_src);
 
   // Target = prior PCD already voxelized at map_voxel_res_ in the ctor.
@@ -1514,7 +1481,7 @@ bool PoseGraphManager::trySingleShotPCD() {
                 T_src(0, 3), T_src(1, 3), T_src(2, 3));
 
     // Stage 1: coarse — wide max_corr_dist absorbs RViz click error.
-    // align() seeded with T_src; getFinalTransformation returns full T_base_in_priormap.
+    // align() seeded with T_src; getFinalTransformation returns full body-in-priormap.
     pcl::PointCloud<PointType> coarse_aligned;
     single_shot_icp_coarse_.handler->setInputTarget(tgt_ptr);
     single_shot_icp_coarse_.handler->setInputSource(src_ptr);
@@ -1537,7 +1504,7 @@ bool PoseGraphManager::trySingleShotPCD() {
     }
 
     // Stage 2: fine — tight cutoff seeded by coarse result. Source stays in
-    // lidar frame; coarse result is passed as guess.
+    // body frame; coarse result is passed as guess.
     pcl::PointCloud<PointType> fine_aligned;
     single_shot_icp_fine_.handler->setInputTarget(tgt_ptr);
     single_shot_icp_fine_.handler->setInputSource(src_ptr);
@@ -1559,13 +1526,12 @@ bool PoseGraphManager::trySingleShotPCD() {
                   fine_fitness, dt.x(), dt.y(), dt.z());
     }
 
-    // T_fine_full = lidar-in-priormap (we passed src in lidar frame, seeded
-    // by T_src = T_init * pose_odom * T_base_from_lidar). Strip the extrinsic
-    // to recover base-in-priormap, then compose so the dispatcher's
-    // `reg.pose_ * T_init` yields the right T_priormap_from_newodom_.
-    const Eigen::Matrix4d T_base_in_priormap =
-        T_fine_full * T_base_from_lidar_.inverse();
-    reg.pose_         = T_base_in_priormap * T_pose_in_priormap.inverse();
+    // T_fine_full = pose-frame-in-priormap (src is what pose_.inverse() left
+    // behind; ICP correction lands in the same frame pose_odom tracks). The
+    // dispatcher does T_priormap_from_newodom_ = reg.pose_ * T_init and then
+    // current_frame_.pose_ ← T_priormap_from_newodom_ * pose_odom, so we want
+    // reg.pose_ * (T_init * pose_odom) = T_fine_full.
+    reg.pose_         = T_fine_full * T_pose_in_priormap.inverse();
     reg.is_valid_     = true;
     reg.is_converged_ = true;
     debug_src_pub_->publish(toROSMsg(src_in_priormap, map_frame_, stamp));
