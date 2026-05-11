@@ -121,12 +121,22 @@ class PoseGraphManager : public rclcpp::Node {
   // either case the caller should skip the rest of the tick.
   bool tryRelocalize();
 
+  // Single-shot scan-vs-prior-PCD initialization. Voxelizes the current
+  // scan, pre-multiplies its pose by bootstrap_T_init_, and matches against
+  // prior_map_cloud_ via KISS-Matcher coarse-to-fine. Retries on each new
+  // scan until success.
+  bool trySingleShotPCD();
+
+  // Callback for RViz "2D Goal Pose" (`/goal_pose`). Overwrites
+  // bootstrap_T_init_ under bootstrap_T_init_mutex_.
+  void goalPoseCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg);
+
   // Load a previously-saved session (scans/ + poses_tum.txt + graph.g2o) from
   // `prior_session_dir_`, populate `prior_keyframes_`, re-key the loaded graph
   // with `prior_session_prefix_`, and seed ISAM2 with the prior session so
   // inter-session BetweenFactors can attach to real nodes. Must be called once
   // in the constructor after `isam_handler_` is constructed.
-  bool loadPriorSession();
+  bool loadPriorSession(bool insert_into_isam);
 
   std::string map_frame_;
   std::string odom_frame_;
@@ -220,9 +230,20 @@ class PoseGraphManager : public rclcpp::Node {
   std::vector<kiss_matcher::PoseGraphNode> prior_keyframes_;
 
   // Relocalization state
-  bool reloc_enabled_                = false;
+  enum class InitMode { Off, SingleShotPCD, SubmapBootstrap };
+  InitMode init_mode_                = InitMode::Off;
+  // Independent PGO toggles. None implies pure pose-stream rewrite into the
+  // prior frame after init success — no joint graph, no extra factors.
+  bool pgo_load_prior_               = false;
+  bool pgo_add_anchor_               = false;
+  bool pgo_continuous_lc_            = false;
+  // RViz `/goal_pose` runtime input for bootstrap_T_init_.
+  bool accept_goal_pose_             = false;
   bool reloc_succeeded_              = false;
   std::string prior_map_pcd_path_;
+  // Single-shot scan-vs-PCD parameters.
+  double single_shot_voxel_resolution_   = 0.5;
+  int single_shot_num_inliers_threshold_ = -1;
   // Bootstrap reloc parameters. The bootstrap module collects
   // `num_submap_keyframes_` scans on the new-session side and matches them
   // against the first `num_submap_keyframes_` keyframes of the prior session
@@ -244,6 +265,7 @@ class PoseGraphManager : public rclcpp::Node {
   // residual misalignment. Final T_priormap_from_newodom_ is
   // reg.pose_ * bootstrap_T_init_. Identity = no prior knowledge.
   Eigen::Matrix4d bootstrap_T_init_ = Eigen::Matrix4d::Identity();
+  std::mutex bootstrap_T_init_mutex_;
   Eigen::Matrix4d reloc_last_accum_pose_ = Eigen::Matrix4d::Identity();
   bool reloc_has_last_accum_pose_        = false;
   // Ring buffer of recent new-session scans (already transformed poses in
@@ -289,6 +311,7 @@ class PoseGraphManager : public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr prior_map_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_save_flag_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_goal_pose_;
 
   // rclcpp::Publisher<pose_graph_tools_msgs::msg::PoseGraph>::SharedPtr loop_closures_pub_;
 

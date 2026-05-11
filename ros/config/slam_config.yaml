@@ -62,20 +62,38 @@
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, localize into a previously saved map at startup
-      prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"                 # Absolute path to the prior accumulated map PCD
-      num_submap_scans: 10               # Number of incoming scans to accumulate before each match attempt
-      submap_scan_distance: 1.0         # [Unit: m] Minimum base-frame motion before accepting the next scan into the submap
-      voxel_resolution: 1.0             # Voxel resolution for relocalization submap/target downsampling
-      # Continuous inter-session loop closure. When prior_session_dir is set,
-      # the directory is expected to contain scans/NNNNNN.pcd, poses_tum.txt,
-      # and graph.g2o (as produced by result.save_pose_graph). Prior keyframes
-      # become real nodes in the ISAM2 graph and every new keyframe searches
-      # for inter-session loop closures against them after the one-shot
-      # bootstrap relocalization succeeds.
-      prior_session_dir: ""             # Empty disables inter-session LC (legacy one-shot reloc only)
-      prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
-      new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
+      enabled: false                    # Master switch. False disables everything below.
+
+      init:
+        # off              -> no init, new session in its own frame
+        # single_shot_pcd  -> match current scan against prior.map_pcd
+        # submap_bootstrap -> accumulate N scans, match against first N prior keyframes
+        mode: "off"
+        accept_goal_pose: false         # If true, subscribe to /goal_pose; updates T_init at runtime
+        # Optional initial guess applied to query pose before registration.
+        # Row-major 4x4. Default is identity.
+        T_init: [1.0, 0.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0, 0.0,
+                 0.0, 0.0, 1.0, 0.0,
+                 0.0, 0.0, 0.0, 1.0]
+        single_shot:
+          voxel_resolution: 0.5         # Voxel size for current scan downsampling
+          num_inliers_threshold: -1     # < 0 reuses global_reg.num_inliers_threshold
+        submap_bootstrap:
+          scan_distance: 0.5            # [m] Min base-frame motion before pushing next scan into buffer
+          voxel_resolution: -1.0        # < 0 reuses global voxel_resolution
+          num_inliers_threshold: -1     # < 0 reuses global_reg.num_inliers_threshold
+
+      prior:
+        map_pcd: ""                     # Required for single_shot_pcd; viz on /prior_map otherwise
+        session_dir: ""                 # Required for submap_bootstrap and any pgo flag
+        session_prefix: "a"
+        new_session_prefix: "b"
+
+      pgo:
+        load_prior_into_graph: false    # Insert prior keyframes as a-prefixed ISAM2 nodes
+        add_bootstrap_anchor: false     # Add cross-prefix BetweenFactor on init success
+        continuous_inter_session_lc: false  # NN search + cross-prefix LC every keyframe
 
     result:
       save_map_pcd: true

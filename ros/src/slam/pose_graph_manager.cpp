@@ -53,14 +53,35 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   lc_config.num_inliers_threshold_ =
       declare_parameter<int>("global_reg.num_inliers_threshold", 100);
 
-  reloc_enabled_ = declare_parameter<bool>("relocalization.enabled", false);
-  prior_map_pcd_path_ = declare_parameter<std::string>("relocalization.prior_map_pcd", "");
-  bootstrap_scan_distance_ =
-      declare_parameter<double>("relocalization.bootstrap_scan_distance", 0.5);
-  bootstrap_voxel_resolution_ = declare_parameter<double>(
-      "relocalization.bootstrap_voxel_resolution", -1.0);
-  bootstrap_num_inliers_threshold_ = declare_parameter<int>(
-      "relocalization.bootstrap_num_inliers_threshold", -1);
+  const bool reloc_master_enabled = declare_parameter<bool>("relocalization.enabled", false);
+
+  // --- init.* group ---
+  {
+    const std::string mode_str =
+        declare_parameter<std::string>("relocalization.init.mode", "off");
+    if (!reloc_master_enabled) {
+      init_mode_ = InitMode::Off;
+      if (mode_str != "off") {
+        RCLCPP_WARN(this->get_logger(),
+                    "relocalization.enabled=false; ignoring init.mode='%s' and "
+                    "forcing init.mode=off.",
+                    mode_str.c_str());
+      }
+    } else if (mode_str == "off") {
+      init_mode_ = InitMode::Off;
+    } else if (mode_str == "single_shot_pcd") {
+      init_mode_ = InitMode::SingleShotPCD;
+    } else if (mode_str == "submap_bootstrap") {
+      init_mode_ = InitMode::SubmapBootstrap;
+    } else {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Unknown relocalization.init.mode='%s'. Valid: off, "
+                   "single_shot_pcd, submap_bootstrap. Disabling init.",
+                   mode_str.c_str());
+      init_mode_ = InitMode::Off;
+    }
+  }
+  accept_goal_pose_ = declare_parameter<bool>("relocalization.init.accept_goal_pose", false);
   {
     const std::vector<double> identity16 = {
         1.0, 0.0, 0.0, 0.0,
@@ -68,10 +89,10 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0};
     const auto t_init_vec = declare_parameter<std::vector<double>>(
-        "relocalization.bootstrap_T_init", identity16);
+        "relocalization.init.T_init", identity16);
     if (t_init_vec.size() != 16) {
       RCLCPP_ERROR(this->get_logger(),
-                   "relocalization.bootstrap_T_init must be 16 doubles "
+                   "relocalization.init.T_init must be 16 doubles "
                    "(row-major 4x4), got %lu. Using identity.",
                    t_init_vec.size());
     } else {
@@ -81,50 +102,106 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
       if (!bootstrap_T_init_.isApprox(Eigen::Matrix4d::Identity())) {
         const Eigen::Vector3d t = bootstrap_T_init_.block<3, 1>(0, 3);
         RCLCPP_INFO(this->get_logger(),
-                    "Bootstrap T_init: translation = (%.3f, %.3f, %.3f) "
+                    "Init T_init: translation = (%.3f, %.3f, %.3f) "
                     "(applied to query pose before reloc).",
                     t.x(), t.y(), t.z());
       }
     }
   }
-  prior_session_dir_ =
-      declare_parameter<std::string>("relocalization.prior_session_dir", "");
+  single_shot_voxel_resolution_ = declare_parameter<double>(
+      "relocalization.init.single_shot.voxel_resolution", 0.5);
+  single_shot_num_inliers_threshold_ = declare_parameter<int>(
+      "relocalization.init.single_shot.num_inliers_threshold", -1);
+  bootstrap_scan_distance_ = declare_parameter<double>(
+      "relocalization.init.submap_bootstrap.scan_distance", 0.5);
+  bootstrap_voxel_resolution_ = declare_parameter<double>(
+      "relocalization.init.submap_bootstrap.voxel_resolution", -1.0);
+  bootstrap_num_inliers_threshold_ = declare_parameter<int>(
+      "relocalization.init.submap_bootstrap.num_inliers_threshold", -1);
+
+  // --- prior.* group ---
+  prior_map_pcd_path_ = declare_parameter<std::string>("relocalization.prior.map_pcd", "");
+  prior_session_dir_  = declare_parameter<std::string>("relocalization.prior.session_dir", "");
   {
     const std::string prior_prefix_str =
-        declare_parameter<std::string>("relocalization.prior_session_prefix", "a");
+        declare_parameter<std::string>("relocalization.prior.session_prefix", "a");
     const std::string new_prefix_str =
-        declare_parameter<std::string>("relocalization.new_session_prefix", "b");
+        declare_parameter<std::string>("relocalization.prior.new_session_prefix", "b");
     if (!prior_prefix_str.empty()) prior_session_prefix_ = prior_prefix_str.front();
     if (!new_prefix_str.empty())   new_session_prefix_   = new_prefix_str.front();
     if (prior_session_prefix_ == new_session_prefix_) {
       RCLCPP_ERROR(this->get_logger(),
-                   "prior_session_prefix and new_session_prefix must differ "
-                   "(got '%c' for both). Forcing new_session_prefix = 'b'.",
+                   "prior.session_prefix and prior.new_session_prefix must "
+                   "differ (got '%c' for both). Forcing new prefix = 'b'.",
                    prior_session_prefix_);
       new_session_prefix_ = 'b';
     }
   }
 
-  if (reloc_enabled_) {
-    // prior_map_pcd is optional — used only for publishing a reference cloud
-    // on `/prior_map`. The actual bootstrap relocalization now matches
-    // against `prior_keyframes_` (loaded from prior_session_dir).
-    if (!prior_map_pcd_path_.empty() && fs::exists(prior_map_pcd_path_)) {
-      prior_map_cloud_.reset(new pcl::PointCloud<PointType>());
-      if (pcl::io::loadPCDFile<PointType>(prior_map_pcd_path_, *prior_map_cloud_) != 0) {
-        RCLCPP_WARN(this->get_logger(),
-                    "Failed to load prior map PCD: %s. Skipping /prior_map publishing.",
-                    prior_map_pcd_path_.c_str());
-        prior_map_cloud_ = nullptr;
-      } else {
-        const auto &voxelized = voxelize(prior_map_cloud_, map_voxel_res_);
-        *prior_map_cloud_     = *voxelized;
-        RCLCPP_INFO(this->get_logger(),
-                    "Loaded prior map '%s' with %lu points (visualization only).",
-                    prior_map_pcd_path_.c_str(),
-                    prior_map_cloud_->size());
-      }
+  // --- pgo.* group ---
+  pgo_load_prior_    = declare_parameter<bool>("relocalization.pgo.load_prior_into_graph", false);
+  pgo_add_anchor_    = declare_parameter<bool>("relocalization.pgo.add_bootstrap_anchor", false);
+  pgo_continuous_lc_ = declare_parameter<bool>("relocalization.pgo.continuous_inter_session_lc", false);
+
+  // --- Validation: downgrade individual features rather than killing everything. ---
+  if (init_mode_ == InitMode::SingleShotPCD && prior_map_pcd_path_.empty()) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "init.mode=single_shot_pcd requires prior.map_pcd. Disabling init.");
+    init_mode_ = InitMode::Off;
+  }
+  if (init_mode_ == InitMode::SubmapBootstrap && prior_session_dir_.empty()) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "init.mode=submap_bootstrap requires prior.session_dir. Disabling init.");
+    init_mode_ = InitMode::Off;
+  }
+  if ((pgo_load_prior_ || pgo_add_anchor_ || pgo_continuous_lc_) && prior_session_dir_.empty()) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "pgo.* flags require prior.session_dir to load prior keyframes. "
+                 "Disabling all pgo flags.");
+    pgo_load_prior_    = false;
+    pgo_add_anchor_    = false;
+    pgo_continuous_lc_ = false;
+  }
+  if (pgo_continuous_lc_ && !pgo_load_prior_) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "pgo.continuous_inter_session_lc=true requires "
+                 "pgo.load_prior_into_graph=true. Disabling continuous LC.");
+    pgo_continuous_lc_ = false;
+  }
+  if (pgo_add_anchor_ && !pgo_load_prior_) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "pgo.add_bootstrap_anchor=true requires "
+                 "pgo.load_prior_into_graph=true. Disabling anchor.");
+    pgo_add_anchor_ = false;
+  }
+  if (pgo_add_anchor_ && init_mode_ == InitMode::Off) {
+    RCLCPP_WARN(this->get_logger(),
+                "pgo.add_bootstrap_anchor=true but init.mode=off; no anchor "
+                "will ever be queued.");
+  }
+
+  // Prior PCD is loaded if a path is given (used for /prior_map viz and as the
+  // target for single_shot_pcd init).
+  if (!prior_map_pcd_path_.empty() && fs::exists(prior_map_pcd_path_)) {
+    prior_map_cloud_.reset(new pcl::PointCloud<PointType>());
+    if (pcl::io::loadPCDFile<PointType>(prior_map_pcd_path_, *prior_map_cloud_) != 0) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Failed to load prior map PCD: %s. Skipping /prior_map publishing.",
+                  prior_map_pcd_path_.c_str());
+      prior_map_cloud_ = nullptr;
+    } else {
+      const auto &voxelized = voxelize(prior_map_cloud_, map_voxel_res_);
+      *prior_map_cloud_     = *voxelized;
+      RCLCPP_INFO(this->get_logger(),
+                  "Loaded prior map '%s' with %lu points.",
+                  prior_map_pcd_path_.c_str(),
+                  prior_map_cloud_->size());
     }
+  }
+  if (init_mode_ == InitMode::SingleShotPCD && (!prior_map_cloud_ || prior_map_cloud_->empty())) {
+    RCLCPP_ERROR(this->get_logger(),
+                 "init.mode=single_shot_pcd but prior map PCD failed to load. Disabling init.");
+    init_mode_ = InitMode::Off;
   }
 
   save_map_bag_         = declare_parameter<bool>("result.save_map_bag", false);
@@ -152,7 +229,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   // `map -> odom` would be absent during accumulation. Seed it with identity
   // so the broadcaster timer emits a valid TF from startup; the first
   // successful reloc tick overwrites it with the real transform.
-  if (reloc_enabled_) {
+  if (init_mode_ != InitMode::Off) {
     std::lock_guard<std::mutex> lock(tf_cache_mutex_);
     cached_T_map_odom_ = Eigen::Matrix4d::Identity();
     tf_cache_ready_    = true;
@@ -168,26 +245,32 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   isam_params_.relinearizeSkip      = 1;
   isam_handler_                     = std::make_shared<gtsam::ISAM2>(isam_params_);
 
-  if (reloc_enabled_ && prior_session_dir_.empty()) {
-    RCLCPP_ERROR(this->get_logger(),
-                 "relocalization.enabled is true but prior_session_dir is empty. "
-                 "Bootstrap reloc now matches against prior_keyframes_ loaded from disk, "
-                 "so prior_session_dir is required. Disabling relocalization.");
-    reloc_enabled_ = false;
-  }
-  if (!prior_session_dir_.empty()) {
-    if (!reloc_enabled_) {
+  // Load prior session into the ISAM2 graph only when explicitly requested.
+  // Without pgo.load_prior_into_graph the prior keyframes stay unused and the
+  // new session runs as a standalone graph that just gets its pose stream
+  // rewritten into the prior frame on init success.
+  if (pgo_load_prior_) {
+    if (!loadPriorSession(true)) {
       RCLCPP_ERROR(this->get_logger(),
-                   "prior_session_dir is set but relocalization.enabled is false. "
-                   "Prior keyframes cannot be placed in the new-session frame without "
-                   "a bootstrap reloc. Ignoring prior_session_dir.");
-      prior_session_dir_.clear();
-    } else if (!loadPriorSession()) {
-      RCLCPP_ERROR(this->get_logger(),
-                   "loadPriorSession() failed. Disabling relocalization.");
-      prior_session_dir_.clear();
+                   "loadPriorSession() failed. Disabling all pgo.* flags.");
       prior_keyframes_.clear();
-      reloc_enabled_ = false;
+      pgo_load_prior_    = false;
+      pgo_add_anchor_    = false;
+      pgo_continuous_lc_ = false;
+    }
+  }
+  // submap_bootstrap matches against prior_keyframes_; load them even when
+  // pgo_load_prior_ is false so the init has something to match against. In
+  // that case the keyframes are NOT inserted into ISAM2 — we just keep the
+  // vector around for the bootstrap match.
+  if (!pgo_load_prior_ && init_mode_ == InitMode::SubmapBootstrap &&
+      prior_keyframes_.empty() && !prior_session_dir_.empty()) {
+    if (!loadPriorSession(false)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "loadPriorSession() failed (needed for submap_bootstrap "
+                   "matching even without pgo). Disabling init.");
+      prior_keyframes_.clear();
+      init_mode_ = InitMode::Off;
     }
   }
 
@@ -219,7 +302,7 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   debug_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("lc/debug_cloud", qos);
   prior_map_pub_   = this->create_publisher<sensor_msgs::msg::PointCloud2>("prior_map", qos);
 
-  if (reloc_enabled_ && prior_map_cloud_ && !prior_map_cloud_->empty()) {
+  if (prior_map_cloud_ && !prior_map_cloud_->empty()) {
     // TRANSIENT_LOCAL QoS latches this for late subscribers (e.g. RViz).
     prior_map_pub_->publish(toROSMsg(*prior_map_cloud_, map_frame_, this->now()));
   }
@@ -247,6 +330,14 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   sub_save_flag_ = this->create_subscription<std_msgs::msg::String>(
       "save_dir", 1, std::bind(&PoseGraphManager::saveFlagCallback, this, std::placeholders::_1));
 
+  if (accept_goal_pose_) {
+    sub_goal_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/goal_pose", 1,
+        std::bind(&PoseGraphManager::goalPoseCallback, this, std::placeholders::_1));
+    RCLCPP_INFO(this->get_logger(),
+                "Listening on /goal_pose for runtime init T_init updates.");
+  }
+
   // hydra_loop_timer_ = this->create_wall_timer(
   //   std::chrono::duration<double>(1.0 / loop_pub_hz),
   //   std::bind(&PoseGraphManager::loopPubTimerFunc, this));
@@ -270,11 +361,11 @@ PoseGraphManager::PoseGraphManager(const rclcpp::NodeOptions &options)
   lc_reg_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / 100.0),
                                           std::bind(&PoseGraphManager::performRegistration, this));
 
-  if (!prior_keyframes_.empty()) {
-    // Inter-session candidate detection is now triggered per new keyframe
-    // inside `callbackNode()` (see `detectInterSessionLoopClosure`), so there
-    // is no standalone detection timer. The registration worker stays on its
-    // own timer so a slow KISS-Matcher pass cannot stall the sync callback.
+  if (pgo_continuous_lc_ && !prior_keyframes_.empty()) {
+    // Inter-session candidate detection is triggered per new keyframe inside
+    // `callbackNode()` (see `detectInterSessionLoopClosure`). The registration
+    // worker stays on its own timer so a slow KISS-Matcher pass cannot stall
+    // the sync callback.
     inter_lc_reg_timer_ = this->create_wall_timer(
         std::chrono::duration<double>(1.0 / 100.0),
         std::bind(&PoseGraphManager::performInterSessionRegistration, this));
@@ -358,16 +449,20 @@ void PoseGraphManager::callbackNode(const nav_msgs::msg::Odometry::ConstSharedPt
   // available to attempt a global alignment to the prior map. Once successful,
   // rewrite every incoming pose into the prior-map frame so the rest of the
   // pipeline (pose graph, TF, saving) operates there transparently.
-  if (reloc_enabled_ && !reloc_succeeded_) {
-    if (!tryRelocalize()) {
-      return;
+  if (init_mode_ != InitMode::Off && !reloc_succeeded_) {
+    bool ok = false;
+    switch (init_mode_) {
+      case InitMode::SingleShotPCD:   ok = trySingleShotPCD(); break;
+      case InitMode::SubmapBootstrap: ok = tryRelocalize();    break;
+      case InitMode::Off: break;
     }
+    if (!ok) return;
     current_frame_.pose_           = T_priormap_from_newodom_ * current_frame_.pose_;
     current_frame_.pose_corrected_ = current_frame_.pose_;
     current_odom                   = current_frame_.pose_;
     last_corrected_pose_           = current_frame_.pose_;
     odom_delta_                    = Eigen::Matrix4d::Identity();
-  } else if (reloc_enabled_ && reloc_succeeded_) {
+  } else if (init_mode_ != InitMode::Off && reloc_succeeded_) {
     current_frame_.pose_           = T_priormap_from_newodom_ * current_frame_.pose_;
     current_frame_.pose_corrected_ = current_frame_.pose_;
   }
@@ -655,6 +750,12 @@ void PoseGraphManager::performRegistration() {
 
 void PoseGraphManager::commitBootstrapAnchor(size_t new_session_kf_idx) {
   if (!pending_bootstrap_anchor_) return;
+  if (!pgo_add_anchor_ || !pgo_load_prior_) {
+    // Init may have succeeded for pose rewriting only; drop the anchor without
+    // adding any factor.
+    pending_bootstrap_anchor_ = false;
+    return;
+  }
   if (prior_keyframes_.empty()) {
     pending_bootstrap_anchor_ = false;
     return;
@@ -712,7 +813,7 @@ void PoseGraphManager::detectInterSessionLoopClosure() {
   // `prior_keyframes_` for the latest keyframe. The dedup set ensures the
   // same (query, match) pair is never enqueued twice, so the registration
   // worker naturally quiesces when the rosbag stops.
-  if (!reloc_succeeded_ || prior_keyframes_.empty()) {
+  if (!pgo_continuous_lc_ || !reloc_succeeded_ || prior_keyframes_.empty()) {
     return;
   }
   std::lock_guard<std::mutex> lock(keyframes_mutex_);
@@ -1129,12 +1230,19 @@ bool PoseGraphManager::tryRelocalize() {
   reloc_last_accum_pose_     = current_frame_.pose_;
   reloc_has_last_accum_pose_ = true;
 
+  // Snapshot init guess under mutex (RViz /goal_pose may race).
+  Eigen::Matrix4d T_init;
+  {
+    std::lock_guard<std::mutex> lock(bootstrap_T_init_mutex_);
+    T_init = bootstrap_T_init_;
+  }
+
   // Push current scan into the query-side ring buffer. pose_corrected_ is
-  // the new-odom pose pre-multiplied by `bootstrap_T_init_` so the query
-  // lives in (an approximation of) the prior-map frame. KISS-Matcher absorbs
-  // the remaining residual misalignment.
+  // the new-odom pose pre-multiplied by `T_init` so the query lives in (an
+  // approximation of) the prior-map frame. KISS-Matcher absorbs the
+  // remaining residual misalignment.
   PoseGraphNode buffered   = current_frame_;
-  buffered.pose_corrected_ = bootstrap_T_init_ * current_frame_.pose_;
+  buffered.pose_corrected_ = T_init * current_frame_.pose_;
   reloc_scan_buffer_.push_back(std::move(buffered));
   while (reloc_scan_buffer_.size() > num_submap_keyframes_) {
     reloc_scan_buffer_.pop_front();
@@ -1190,10 +1298,9 @@ bool PoseGraphManager::tryRelocalize() {
     return false;
   }
 
-  // reg.pose_ aligns the pre-transformed query (bootstrap_T_init_ * new-odom)
-  // into the prior frame, so compose to recover the raw new-odom -> prior
-  // transform.
-  T_priormap_from_newodom_     = reg.pose_ * bootstrap_T_init_;
+  // reg.pose_ aligns the pre-transformed query (T_init * new-odom) into the
+  // prior frame, so compose to recover the raw new-odom -> prior transform.
+  T_priormap_from_newodom_     = reg.pose_ * T_init;
   reloc_succeeded_             = true;
   pending_bootstrap_anchor_    = true;
   pending_bootstrap_match_idx_ = center_idx;
@@ -1208,7 +1315,101 @@ bool PoseGraphManager::tryRelocalize() {
   return true;
 }
 
-bool PoseGraphManager::loadPriorSession() {
+bool PoseGraphManager::trySingleShotPCD() {
+  if (!prior_map_cloud_ || prior_map_cloud_->empty()) {
+    RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                          "Single-shot reloc requires a loaded prior map PCD.");
+    return false;
+  }
+
+  // Snapshot init guess under the goal-pose mutex (RViz callback may race).
+  Eigen::Matrix4d T_init;
+  {
+    std::lock_guard<std::mutex> lock(bootstrap_T_init_mutex_);
+    T_init = bootstrap_T_init_;
+  }
+
+  // Source = current scan voxelized at the configured resolution, transformed
+  // into the (approximate) prior frame via T_init * current_pose. KISS-Matcher
+  // resolves the residual.
+  pcl::PointCloud<PointType> src_voxelized =
+      *voxelize(current_frame_.scan_, single_shot_voxel_resolution_);
+  const Eigen::Matrix4d T_src = T_init * current_frame_.pose_;
+  pcl::PointCloud<PointType> src = transformPcd(src_voxelized, T_src);
+
+  // Target = prior PCD already voxelized at map_voxel_res_ in the ctor.
+  const pcl::PointCloud<PointType> &tgt = *prior_map_cloud_;
+
+  loop_closure_->setSrcAndTgtCloud(src, tgt);
+  const RegOutput reg = loop_closure_->coarseToFineAlignment(
+      src, tgt, single_shot_num_inliers_threshold_);
+
+  const auto stamp = this->now();
+  debug_src_pub_->publish(toROSMsg(loop_closure_->getSourceCloud(), map_frame_, stamp));
+  debug_tgt_pub_->publish(toROSMsg(loop_closure_->getTargetCloud(), map_frame_, stamp));
+  debug_coarse_aligned_pub_->publish(
+      toROSMsg(loop_closure_->getCoarseAlignedCloud(), map_frame_, stamp));
+
+  if (!reg.is_valid_) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                         "Single-shot reloc rejected (overlap=%.1f%%, inliers=%lu). "
+                         "Retrying on next scan.",
+                         reg.overlapness_, reg.num_final_inliers_);
+    return false;
+  }
+
+  // reg.pose_ aligns (T_init * pose) into the prior frame, so compose to
+  // recover the raw new-odom -> prior transform.
+  T_priormap_from_newodom_     = reg.pose_ * T_init;
+  reloc_succeeded_             = true;
+  // Match index 0 is a placeholder; the anchor is only committed if
+  // pgo_load_prior_ AND pgo_add_anchor_ are true. With single_shot_pcd the
+  // anchor target is the first prior keyframe (closest semantic to the PCD).
+  pending_bootstrap_anchor_    = (pgo_load_prior_ && pgo_add_anchor_);
+  pending_bootstrap_match_idx_ = 0;
+
+  RCLCPP_INFO(this->get_logger(),
+              "\033[1;32mSingle-shot reloc succeeded against prior PCD "
+              "(inliers=%lu, overlap=%.1f%%).\033[0m",
+              reg.num_final_inliers_, reg.overlapness_);
+  return true;
+}
+
+void PoseGraphManager::goalPoseCallback(
+    const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg) {
+  if (init_mode_ == InitMode::Off) {
+    RCLCPP_WARN(this->get_logger(),
+                "/goal_pose received but init.mode=off; ignoring.");
+    return;
+  }
+  if (reloc_succeeded_) {
+    RCLCPP_WARN(this->get_logger(),
+                "/goal_pose received but relocalization already succeeded; ignoring.");
+    return;
+  }
+
+  tf2::Quaternion q(msg->pose.orientation.x, msg->pose.orientation.y,
+                    msg->pose.orientation.z, msg->pose.orientation.w);
+  tf2::Matrix3x3 rot_tf(q);
+  Eigen::Matrix3d rot;
+  matrixTF2ToEigen(rot_tf, rot);
+
+  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
+  T.block<3, 3>(0, 0) = rot;
+  T(0, 3) = msg->pose.position.x;
+  T(1, 3) = msg->pose.position.y;
+  T(2, 3) = msg->pose.position.z;
+
+  {
+    std::lock_guard<std::mutex> lock(bootstrap_T_init_mutex_);
+    bootstrap_T_init_ = T;
+  }
+  RCLCPP_INFO(this->get_logger(),
+              "/goal_pose updated init T_init to translation=(%.3f, %.3f, %.3f).",
+              T(0, 3), T(1, 3), T(2, 3));
+}
+
+bool PoseGraphManager::loadPriorSession(bool insert_into_isam) {
   const fs::path dir(prior_session_dir_);
   const fs::path poses_path = dir / "poses_tum.txt";
   const fs::path scans_dir  = dir / "scans";
@@ -1389,6 +1590,14 @@ bool PoseGraphManager::loadPriorSession() {
           sym_prev, sym_curr, p_prev.between(p_curr), default_noise));
       prior_values.insert(sym_curr, p_curr);
     }
+  }
+
+  if (!insert_into_isam) {
+    RCLCPP_INFO(this->get_logger(),
+                "[prior] Loaded %lu prior keyframes (NOT inserted into ISAM2 — "
+                "pgo.load_prior_into_graph=false).",
+                prior_keyframes_.size());
+    return true;
   }
 
   // Merge into persistent graph so a subsequent save round-trips prior + new

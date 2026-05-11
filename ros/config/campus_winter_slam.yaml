@@ -65,37 +65,33 @@
       num_inliers_threshold: 32 #50       # ⭐ Minimum inlier count to accept KISS-Matcher initial alignment
 
     relocalization:
-      enabled: false                    # If true, bootstrap into a previously saved session at startup
-      prior_map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"  # Visualization only (published on /prior_map). Leave empty to skip.
-      # Prior session dir is required when reloc is enabled. The directory must
-      # contain scans/NNNNNN.pcd, poses_tum.txt, and graph.g2o (as produced by
-      # result.save_pose_graph). Prior keyframes become real nodes in the ISAM2
-      # graph; the bootstrap step below runs a submap-to-submap match against
-      # the prior session's starting region to place new-session odometry into
-      # the prior frame.
-      prior_session_dir: ""
-      prior_session_prefix: "a"         # Single-char GTSAM symbol prefix for prior-session keys
-      new_session_prefix: "b"           # Single-char GTSAM symbol prefix for this run's keys
-      # --- Submap-to-submap bootstrap reloc. Assumes the new session starts
-      # near the prior session's start pose. We collect `num_submap_keyframes`
-      # scans into a ring buffer on the new-session side and match them against
-      # the first `num_submap_keyframes` prior-session keyframes (KISS-Matcher
-      # + VGICP). On failure, the ring slides by one and we retry.
-      bootstrap_scan_distance: 0.5        # [Unit: m] Throttle: push a new scan into the query buffer
-                                          # only after this much motion.
-      bootstrap_voxel_resolution: -1.0    # [Unit: m] Pre-voxelize resolution applied to BOTH
-                                          # src and tgt submaps during bootstrap reloc only.
-                                          # <= 0 reuses the global `voxel_resolution`.
-      bootstrap_num_inliers_threshold: -1  # Minimum KISS-Matcher inliers for bootstrap. < 0
-                                          # reuses `global_reg.num_inliers_threshold`.
-      # Known 4x4 transform (row-major) from the new-odom frame to the prior-map
-      # frame. Pre-applied to the query pose before candidate search so
-      # KISS-Matcher only has to solve the residual misalignment. Default is
-      # identity (no prior knowledge).
-      bootstrap_T_init: [1.0, 0.0, 0.0, 0.0,
-                         0.0, 1.0, 0.0, 0.0,
-                         0.0, 0.0, 1.0, 0.0,
-                         0.0, 0.0, 0.0, 1.0]
+      enabled: false
+
+      init:
+        mode: "off"                     # off | single_shot_pcd | submap_bootstrap
+        accept_goal_pose: false
+        T_init: [1.0, 0.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0, 0.0,
+                 0.0, 0.0, 1.0, 0.0,
+                 0.0, 0.0, 0.0, 1.0]
+        single_shot:
+          voxel_resolution: 0.5
+          num_inliers_threshold: -1
+        submap_bootstrap:
+          scan_distance: 0.5
+          voxel_resolution: -1.0
+          num_inliers_threshold: -1
+
+      prior:
+        map_pcd: "/home/niksta/ros2_ws/src/KISS-Matcher/ros/data/campus_winter/result.pcd"
+        session_dir: ""
+        session_prefix: "a"
+        new_session_prefix: "b"
+
+      pgo:
+        load_prior_into_graph: false
+        add_bootstrap_anchor: false
+        continuous_inter_session_lc: false
 
     result:
       save_map_pcd: true
