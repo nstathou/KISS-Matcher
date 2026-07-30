@@ -2,11 +2,11 @@
 launch:
   # In arg, all the default value should be string
   - arg: {name: start_rviz,  default: "false"}
-  - arg: {name: namespace,  default: "husky", description: robot namespace; frames/topics derive from it}
+  - arg: {name: namespace,  default: "unitree", description: robot namespace; frames/topics derive from it}
   - arg: {name: use_sim_time, default: "false", description: "Set true when replaying a bag so TF stamps share the sim clock with Fast-LIO"}
 
   - arg: {name: rviz_path,  default: $(find-pkg-share kiss_matcher_ros)/rviz/kiss_matcher_sam.rviz}
-  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/husky_slam.yaml}
+  - arg: {name: config_path,   default: $(find-pkg-share kiss_matcher_ros)/config/unitree_slam.yaml}
 
   # Namespaced to match spark-fast-lio: <ns>/map -> <ns>/odom -> <ns>/base_link.
   - arg: {name: map_frame , default: '$(var namespace)/map' , description: "Global (loop-closure corrected) frame"}
